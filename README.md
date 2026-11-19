@@ -72,7 +72,7 @@ A small Debian container is plenty: 1 CPU, 1 GB of memory, 4 GB of disk.
    (uv installs into `~/.local/bin`; log out and back in, or `source ~/.profile`.)
 3. **Get watchtower:**
    ```
-   git clone https://github.com/bm1-cstewart/watchtower.git /opt/watchtower
+   git clone https://github.com/flbas1/watchtower.git /opt/watchtower
    cd /opt/watchtower
    cp config.example.yml config.yml     # then edit: your feeds, location, keywords
    uv run watchtower --once             # a first run: checks every feed, writes the files
