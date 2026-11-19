@@ -1094,6 +1094,74 @@ class GpsJamProcessor(FeedProcessor):
         return pd.DataFrame(rows, columns=WEATHER_COLUMNS)
 
 
+# --- fires: NASA FIRMS satellite hotspots and NIFC's US wildfires ---------------------------------
+
+class FirmsHotspotsProcessor(FeedProcessor):
+    """Heat spots satellites saw in the last 24 hours (wildfires, also gas flares and farm burns),
+    from NASA FIRMS's public CSV files (no key), e.g. url
+    https://firms.modaps.eosdis.nasa.gov/data/active_fire/modis-c6.1/csv/MODIS_C6_1_Global_24h.csv
+    (worldwide, about 10,000 spots). Settings:
+      min_confidence  MODIS's 0-100 confidence a spot needs (default 80: about 3,000 worldwide)
+      area            optional [south, west, north, east]
+    One row per spot, titled "Fire hotspot: 37 MW, 98% confidence"; magnitude is the fire's
+    radiative power (MW)."""
+
+    def process(self, client, response) -> pd.DataFrame:
+        spots = pd.read_csv(io.StringIO(response.text))
+        least, area = self.settings.get("min_confidence", 80), self.settings.get("area")
+        spots = spots[pd.to_numeric(spots["confidence"], errors="coerce").fillna(0) >= least]
+        if area:
+            spots = spots[spots["latitude"].between(area[0], area[2]) & spots["longitude"].between(area[1], area[3])]
+        rows = []
+        for s in spots.itertuples(index=False):
+            hhmm = f"{int(s.acq_time):04d}"
+            rows.append({
+                "title": f"Fire hotspot: {s.frp:.0f} MW, {s.confidence}% confidence",
+                "url": f"https://firms.modaps.eosdis.nasa.gov/map/#d:24hrs;@{s.longitude:.3f},{s.latitude:.3f},10.0z",
+                "source": self.settings["name"],
+                "time": pd.Timestamp(f"{s.acq_date} {hhmm[:2]}:{hhmm[2:]}", tz="UTC"),
+                "lat": s.latitude, "lon": s.longitude,
+                "id": f"{s.latitude:.4f},{s.longitude:.4f},{s.acq_date},{hhmm}",
+                "magnitude": s.frp,
+                "details": f"seen {s.acq_date} {hhmm[:2]}:{hhmm[2:]} UTC ({'night' if s.daynight == 'N' else 'day'}) · {s.brightness:.0f} K",
+            })
+        return pd.DataFrame(rows, columns=EVENT_COLUMNS)
+
+
+class NifcWildfiresProcessor(FeedProcessor):
+    """US wildfires not yet declared out, from NIFC's current incidents (WFIGS) service, e.g. url
+    https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query?where=IncidentTypeCategory%3D%27WF%27+AND+FireOutDateTime+IS+NULL&outFields=*&outSR=4326&f=json
+    Optional `area`. One row per fire, titled "Aspen Acres fire: 102,007 acres, 96% contained",
+    at its point of origin; magnitude is its size in acres."""
+
+    def process(self, client, response) -> pd.DataFrame:
+        area = self.settings.get("area")
+        rows = []
+        for f in response.json().get("features", []):
+            a, g = f.get("attributes") or {}, f.get("geometry") or {}
+            lat, lon = g.get("y"), g.get("x")
+            if lat is None or lon is None or (area and not (area[0] <= lat <= area[2] and area[1] <= lon <= area[3])):
+                continue
+            size, contained = a.get("IncidentSize"), a.get("PercentContained")
+            facts = [f"{size:,.0f} acres" if size is not None else "size unknown",
+                     f"{contained:.0f}% contained" if contained is not None else None]
+            place = ", ".join(p for p in [f"{a['POOCounty']} County" if a.get("POOCounty") else None,
+                                          (a.get("POOState") or "").removeprefix("US-") or None] if p)
+            found = a.get("FireDiscoveryDateTime")
+            rows.append({
+                "title": f"{(a.get('IncidentName') or 'Unnamed').strip()} fire: " + ", ".join(x for x in facts if x),
+                "url": "https://www.nifc.gov/fire-information/nfn",
+                "source": self.settings["name"],
+                "time": pd.to_datetime(a.get("ModifiedOnDateTime_dt") or found, unit="ms", utc=True) if (a.get("ModifiedOnDateTime_dt") or found) else None,
+                "lat": lat, "lon": lon,
+                "id": a.get("UniqueFireIdentifier") or a.get("IrwinID"),
+                "magnitude": size,
+                "details": " · ".join(x for x in [place, f"cause: {a['FireCause'].lower()}" if a.get("FireCause") else None,
+                                                  f"found {pd.to_datetime(found, unit='ms', utc=True):%Y-%m-%d}" if found else None] if x),
+            })
+        return pd.DataFrame(rows, columns=EVENT_COLUMNS)
+
+
 class Feed:
     def __init__(self, name, settings):
         self.name = name
@@ -1156,5 +1224,7 @@ PROCESSORS = {                       # `format:` in the YAML -> the class that r
     "ioda_outages": IodaOutagesProcessor,
     "celestrak_satellites": CelestrakSatellitesProcessor,
     "gpsjam": GpsJamProcessor,
+    "firms_hotspots": FirmsHotspotsProcessor,
+    "nifc_wildfires": NifcWildfiresProcessor,
 }
 AUTH_TYPES = {"none": NoAuth, "basic": BasicAuth}

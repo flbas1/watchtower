@@ -71,8 +71,8 @@ DEFAULTS: dict[str, object] = {
         "rain_radar_florida": {"name": "Rain radar (Florida)", "update_minutes": 5, "format": "iem_radar",
                                "url": "https://mesonet.agron.iastate.edu/data/gis/images/4326/USCOMP/n0r_0.png",
                                "area": [24.0, -88.0, 31.5, -79.0]},
-        # Where it's raining worldwide (wherever there's ground radar): RainViewer's mosaic. A
-        # map shows it with its Rain switch, not as a feed tick.
+        # Where it's raining worldwide (wherever there's ground radar): RainViewer's mosaic. Ticked
+        # on a map like any feed.
         "rain_radar_world": {"name": "Rain radar (world)", "update_minutes": 5, "format": "rainviewer",
                              "url": "https://api.rainviewer.com/public/weather-maps.json"},
         # Flights with adsb.fi's flags (government and other notable aircraft, owners who hide
@@ -95,6 +95,14 @@ DEFAULTS: dict[str, object] = {
                         "threshold": 0.1, "min_aircraft": 3},
         # Internet outages by country over the last day (Georgia Tech's IODA).
         "internet_outages": {"name": "Internet outages", "update_minutes": 30, "format": "ioda_outages", "hours": 24},
+        # Fires: heat spots satellites saw in the last 24 h, worldwide (NASA FIRMS, MODIS; also
+        # flares and farm burns), and US wildfires not yet declared out, with acres (NIFC).
+        "fire_hotspots": {"name": "Fire hotspots (satellite)", "update_minutes": 60, "format": "firms_hotspots",
+                          "url": "https://firms.modaps.eosdis.nasa.gov/data/active_fire/modis-c6.1/csv/MODIS_C6_1_Global_24h.csv",
+                          "min_confidence": 80},
+        "us_wildfires": {"name": "US wildfires", "update_minutes": 30, "format": "nifc_wildfires",
+                         "url": "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
+                                "?where=IncidentTypeCategory%3D%27WF%27+AND+FireOutDateTime+IS+NULL&outFields=*&outSR=4326&f=json"},
         # Vulnerabilities attackers are exploiting now (CISA), the newest 20.
         "exploited_vulnerabilities": {"name": "Exploited vulnerabilities (CISA)", "update_minutes": 360,
                                       "format": "cisa_kev", "newest": 20,
@@ -102,7 +110,7 @@ DEFAULTS: dict[str, object] = {
         # Florida Division of Emergency Management announcements.
         "florida_emergency_management": {"name": "Florida Emergency Management", "update_minutes": 30, "format": "rss",
                                          "url": "https://public.govdelivery.com/accounts/FLDEM/feed.rss"},
-        # Filling the rain layer where there's no radar (a map's Rain switch shows them, under
+        # Filling the rain layer where there's no radar (ticked on a map like any feed, drawn under
         # RainViewer; `rain_layer` is the order, lowest at the bottom). From NASA GIBS:
         # storm clouds from the GOES and Himawari satellites (live; the Americas, Pacific, East
         # Asia, Australia; grey made see-through), and satellite rainfall (global, ~6 h behind).

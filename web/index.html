@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>osint-web</title>
+<title>WatchTower</title>
 <style>
   :root {
     --row: 44px;          /* height of one marquee */
@@ -114,7 +114,7 @@
 //     rows: [{feed, mode: "static"|"crawl", pinned, slot, staticSeconds, crawlPixelsPerSecond}],
 //     maps: [{feeds, center: null (location) | "follow" | {lat, lon}, zoom, placement: "docked"|"floating",
 //             side, size (% of the window), push (make room for the rows, or cover them), x, y, w, h (floating),
-//             rain (the global rain layer on or off), rainOpacity (%), rainSatelliteMaxZoom,
+//             rainOpacity (% for the rain feeds in `feeds`), streetsOpacity (% OpenStreetMap, 0 = off), streetsFromZoom (streets only past it), rainSatelliteMaxZoom,
 //             rainRadarMaxZoom (rain hides past these), colours {feed: "#rrggbb"}}] }
 // A row's own staticSeconds / crawlPixelsPerSecond (null = the global speed) override the global.
 // A pinned row's slot is the screen line it holds, counted from the nearer edge:
@@ -532,7 +532,7 @@ function refreshRows(defaultBefore) {
 // A map is only redrawn when something changes (data, a pan or zoom, a resize, the sun).
 // =============================================================================
 const WORLD_PIXELS_AT_ZOOM_1 = 1024;
-const MIN_ZOOM = 1, MAX_ZOOM = 8;          // the NASA images blur past 5, but areas and markers stay sharp (county level at 7-8)
+const MIN_ZOOM = 1, MAX_ZOOM = 14;         // NASA GIBS tiles keep the picture sharp to about 7; streets (OpenStreetMap) to 14
 const FOLLOW_MAX_ZOOM = 2;                 // follow never zooms closer than this (as in osint)
 const FIT_MARGIN = 0.15;                   // follow leaves 15% free around the data
 const TWILIGHT_TOP = 3, TWILIGHT_BOTTOM = -6;   // sun height (degrees): full day above, full night below
@@ -573,7 +573,20 @@ function subsolarPoint(when) {
 
 // A 360 x 180 picture of the night side (opaque = night), one pixel per degree. It's drawn
 // stretched over the night-lights image, which smooths the twilight edge for free.
-let nightMask = null, nightMaskSun = null;
+let nightMask = null, nightMaskSun = null, nightMaskAlpha = null;
+
+// Is any of this box (degrees) on the night side? Night tiles are only fetched where it's dark.
+function nightIn(west, south, east, north) {
+  getNightMask();
+  for (let lat = Math.max(-90, south); lat < Math.min(90, north); lat++) {
+    const row = Math.min(179, Math.max(0, Math.floor(90 - lat)));
+    for (let lon = west; lon < east; lon++) {
+      const col = ((Math.floor(lon + 180) % 360) + 360) % 360;
+      if (nightMaskAlpha[(row * 360 + col) * 4 + 3]) return true;
+    }
+  }
+  return false;
+}
 function getNightMask() {
   const sun = subsolarPoint(new Date());
   if (nightMask && Math.abs(sun.lon - nightMaskSun.lon) < 0.5 && Math.abs(sun.lat - nightMaskSun.lat) < 0.5) return nightMask;
@@ -594,7 +607,7 @@ function getNightMask() {
     }
   }
   ctx.putImageData(data, 0, 0);
-  nightMask = canvas; nightMaskSun = sun;
+  nightMask = canvas; nightMaskSun = sun; nightMaskAlpha = data.data;
   return canvas;
 }
 
@@ -602,6 +615,10 @@ function getNightMask() {
 function pixelsPerDegree(zoom) { return WORLD_PIXELS_AT_ZOOM_1 * 2 ** (zoom - 1) / 360; }
 function clampZoom(z) { return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z)); }
 function wrapLon(lon) { return ((lon + 180) % 360 + 360) % 360 - 180; }
+
+// The rain layer's feeds (RainViewer, the satellite fills): ticked in a map's feed list like any
+// other feed, but drawn together by drawRain (in their order, at the map's rain opacity).
+function isRainFeed(key) { const f = GEO.feeds[key]; return !!f && (f.format === "rainviewer" || !!f.rain); }
 
 function mapPoints(cfg) {                  // every place the map's feeds mark, except the sun
   const points = [];
@@ -664,8 +681,10 @@ const FORMAT_COLOURS = {
   celestrak_satellites: "#00dcff",   // satellites: cyan
   gpsjam: "#dc00dc",                 // GPS jamming: magenta (its hexagons; see AREA_STYLES)
   adsb_fi: "#ffffff",                // planes: white (military olive, flagged gold, unless the feed has its own colour)
+  firms_hotspots: "#ff6a00",         // satellite fire hotspots: fire orange, small dots
+  nifc_wildfires: "#ff2d00",         // US named wildfires: orange-red
 };
-const MARKER_SIZES = { celestrak_satellites: 3 };   // small dots for many small things; others MARKER_RADIUS
+const MARKER_SIZES = { celestrak_satellites: 3, firms_hotspots: 3 };   // small dots for many small things; others MARKER_RADIUS
 const PLANE_FLAG_COLOURS = { military: "#9acd32", interesting: "#ffd700", pia: "#ffd700", ladd: "#ffd700" };
 
 function feedColour(map, key, format) {
@@ -695,6 +714,66 @@ function drawWorld(ctx, img, view, w, h) {
     const sx = (left - x) / worldW * iw, sw = (right - left) / worldW * iw;
     const sy = (top - y0) / worldH * ih, sh = (bottom - top) / worldH * ih;
     ctx.drawImage(img, sx, sy, sw, sh, left, top, right - left, bottom - top);
+  }
+}
+
+// Sharper pictures zoomed in: NASA GIBS tiles of the same two pictures (Blue Marble day,
+// Black Marble 2016 night), in the maps' own flat lat/lon layout, so no reshaping. 512 px a
+// tile; a level-0 tile is 288 degrees, each level halves it; level 7 is about 500 m a pixel.
+// The page's own pictures are drawn first (no wait, no holes), tiles over them as they load.
+const GIBS_TILES = {
+  day:   "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_NextGeneration/default/500m/{z}/{y}/{x}.jpeg",
+  night: "https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/VIIRS_Black_Marble/default/2016-01-01/500m/{z}/{y}/{x}.png",
+};
+const GIBS_MAX_LEVEL = 7, GIBS_TILE_PIXELS = 512, GIBS_LEVEL0_DEGREES = 288;
+const PICTURE_PIXELS_PER_DEGREE = 15;     // the page's own pictures: 5400 px for 360 degrees
+const GIBS_KEEP = 200;                    // tiles kept loaded (about 1 MB each in memory)
+const gibsImages = new Map();             // url -> Image, oldest first
+
+let gibsFrame = null;
+function gibsSoon() {                     // tiles arrive one by one: redraw at most once a screen frame
+  if (gibsFrame) return;
+  gibsFrame = requestAnimationFrame(() => { gibsFrame = null; for (const m of mapsOnScreen) drawPicture(m); });
+}
+
+function gibsTile(kind, z, x, y) {
+  const url = GIBS_TILES[kind].replace("{z}", z).replace("{x}", x).replace("{y}", y);
+  let img = gibsImages.get(url);
+  if (img) { gibsImages.delete(url); gibsImages.set(url, img); return img; }   // used again: newest
+  img = new Image();
+  img.onload = gibsSoon;
+  img.src = url;
+  gibsImages.set(url, img);
+  if (gibsImages.size > GIBS_KEEP) gibsImages.delete(gibsImages.keys().next().value);
+  return img;
+}
+
+// Draw the tiles in view, when the map shows more detail than the page's own picture has.
+// `want(west, south, east, north)` may skip tiles (the night ones on the day side).
+function drawTiles(ctx, kind, view, w, h, want) {
+  const ppd = pixelsPerDegree(view.zoom);
+  const needed = ppd * Math.min(window.devicePixelRatio || 1, 2);       // screen pixels per degree
+  if (needed <= PICTURE_PIXELS_PER_DEGREE) return;
+  let z = 0;
+  while (z < GIBS_MAX_LEVEL && GIBS_TILE_PIXELS * 2 ** z / GIBS_LEVEL0_DEGREES < needed) z++;
+  const deg = GIBS_LEVEL0_DEGREES / 2 ** z, cols = Math.round(360 / deg), rows = Math.round(180 / deg);
+  const toX = lon => w / 2 + (lon - view.lon) * ppd, toY = lat => h / 2 - (lat - view.lat) * ppd;
+  const latTop = Math.min(90, view.lat + h / 2 / ppd), latBottom = Math.max(-90, view.lat - h / 2 / ppd);
+  if (latTop <= latBottom) return;
+  const rFirst = Math.max(0, Math.floor((90 - latTop) / deg)), rLast = Math.min(rows - 1, Math.floor((90 - latBottom) / deg));
+  let cFirst = Math.floor((view.lon - w / 2 / ppd + 180) / deg), cLast = Math.floor((view.lon + w / 2 / ppd + 180) / deg);
+  if (worldFits(view, w)) { cFirst = Math.max(0, cFirst); cLast = Math.min(cols - 1, cLast); }   // one Earth: no repeats
+  for (let c = cFirst; c <= cLast; c++) {                      // c unwrapped: tiles repeat round the world
+    const west = c * deg - 180, tx = ((c % cols) + cols) % cols;
+    const left = Math.floor(toX(west)), right = Math.ceil(toX(west + deg));   // whole pixels: no seams
+    for (let r = rFirst; r <= rLast; r++) {
+      const north = 90 - r * deg;
+      if (want && !want(west, north - deg, west + deg, north)) continue;
+      const img = gibsTile(kind, z, tx, r);
+      if (!ready(img)) continue;                               // the page's picture shows until it loads
+      const top = Math.floor(toY(north)), bottom = Math.ceil(toY(north - deg));
+      ctx.drawImage(img, left, top, right - left, bottom - top);
+    }
   }
 }
 
@@ -749,15 +828,15 @@ const STRIPS = 8;                         // per tile: enough that the stretch c
 const rainImages = new Map();             // tile url -> Image
 let rainNow = null, rainBefore = null;    // the newest tile address, and the one before it
 
-function rainTiles() {
-  const feed = Object.values(GEO.feeds).find(f => f.format === "rainviewer");
-  return feed?.items[0]?.tiles ?? null;
+function rainTiles(cfg) {                 // the RainViewer frame, if the map has it ticked
+  const key = cfg.feeds.find(k => GEO.feeds[k]?.format === "rainviewer");
+  return key ? GEO.feeds[key].items[0]?.tiles ?? null : null;
 }
 
 let rainFrame = null;
 function rainSoon() {                     // tiles arrive one by one: redraw at most once a screen frame
   if (rainFrame) return;
-  rainFrame = requestAnimationFrame(() => { rainFrame = null; for (const m of mapsOnScreen) if (m.cfg.rain) drawRadar(m); });
+  rainFrame = requestAnimationFrame(() => { rainFrame = null; for (const m of mapsOnScreen) if (rainTiles(m.cfg)) drawRadar(m); });
 }
 
 function rainTile(template, z, x, y) {
@@ -772,11 +851,11 @@ function rainTile(template, z, x, y) {
 }
 
 // Under the radar: osint's world pictures that fill the gaps where there's no radar (storm
-// clouds, satellite rainfall), feeds with a `rain` order, lowest first.
+// clouds, satellite rainfall), the map's ticked feeds with a `rain` order, lowest first.
 function drawRainFill(ctx, map, w, h) {
   const { near, toX, toY } = project(map);
   const ppd = pixelsPerDegree(map.view.zoom);
-  const fills = Object.values(GEO.feeds).filter(f => f.rain).sort((a, b) => a.rain - b.rain);
+  const fills = map.cfg.feeds.map(k => GEO.feeds[k]).filter(f => f?.rain).sort((a, b) => a.rain - b.rain);
   ctx.globalAlpha = map.cfg.rainOpacity / 100;
   for (const feed of fills) {
     const item = feed.items[0];
@@ -797,7 +876,7 @@ function drawRainFill(ctx, map, w, h) {
 // 20 km a pixel), radar much later, so planes and points stay clear when you zoom in.
 function drawRain(ctx, map, w, h) {
   if (map.view.zoom <= map.cfg.rainSatelliteMaxZoom) drawRainFill(ctx, map, w, h);
-  const tiles = rainTiles();
+  const tiles = rainTiles(map.cfg);
   if (!tiles || map.view.zoom > map.cfg.rainRadarMaxZoom) return;
   if (tiles !== rainNow) {                                    // a new frame: keep the last one until its tiles load
     rainBefore = rainNow; rainNow = tiles;
@@ -805,8 +884,50 @@ function drawRain(ctx, map, w, h) {
       if (!(rainBefore && url.startsWith(rainBefore.split("{z}")[0])) && !url.startsWith(rainNow.split("{z}")[0])) rainImages.delete(url);
     }
   }
-  const view = map.view, ppd = pixelsPerDegree(view.zoom);
-  const z = Math.min(RAIN_MAX_TILE_ZOOM, Math.max(1, Math.round(view.zoom) + 1));   // about the map's own detail
+  const z = Math.min(RAIN_MAX_TILE_ZOOM, Math.max(1, Math.round(map.view.zoom) + 1));   // about the map's own detail
+  drawMercatorTiles(ctx, map.view, w, h, z, map.cfg.rainOpacity / 100, (tx, y) => {
+    const img = rainTile(rainNow, z, tx, y);
+    return ready(img) || !rainBefore ? img : rainImages.get(rainBefore.replace("{z}", z).replace("{x}", tx).replace("{y}", y));
+  });
+  credit(ctx, "Rain: RainViewer", 6, h - 4, "left");          // RainViewer's free use asks for a credit
+}
+
+function credit(ctx, text, x, y, align) {
+  ctx.font = "11px 'Segoe UI', system-ui, sans-serif";
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = align;
+  ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.lineWidth = 3; ctx.lineJoin = "round";   // readable on light streets too
+  ctx.strokeText(text, x, y);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fillText(text, x, y);
+  ctx.textAlign = "left";
+}
+
+// Web-map tiles (RainViewer, OpenStreetMap: 256 px, the web's "Mercator" projection, where
+// latitudes stretch toward the poles) on our flat lat/lon maps: each tile is drawn in thin
+// horizontal strips, each strip put at its own latitudes. `tileAt(x, y)` gives the image (or
+// nothing) for tile x, y at zoom z; only tiles in view are asked for. The strips overlap by
+// part of a pixel, so they're drawn opaque on a scratch canvas, which is then laid on the map
+// at `alpha`: drawn straight on see-through, every overlap would show as a light line.
+const tileScratch = document.createElement("canvas");
+function drawMercatorTiles(ctx, view, w, h, z, alpha, tileAt) {
+  if (tileScratch.width !== ctx.canvas.width || tileScratch.height !== ctx.canvas.height) {
+    tileScratch.width = ctx.canvas.width; tileScratch.height = ctx.canvas.height;
+  }
+  const out = ctx;
+  ctx = tileScratch.getContext("2d");
+  ctx.setTransform(out.getTransform());
+  ctx.clearRect(0, 0, w, h);
+  drawMercatorStrips(ctx, view, w, h, z, tileAt);
+  out.save();
+  out.setTransform(1, 0, 0, 1, 0, 0);
+  out.globalAlpha = alpha;
+  out.drawImage(tileScratch, 0, 0);
+  out.restore();
+}
+
+function drawMercatorStrips(ctx, view, w, h, z, tileAt) {
+  const ppd = pixelsPerDegree(view.zoom);
   const n = 2 ** z, rad = Math.PI / 180;
   const tileY = lat => (1 - Math.log(Math.tan(lat * rad) + 1 / Math.cos(lat * rad)) / Math.PI) / 2 * n;
   const latOf = y => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) / rad;
@@ -817,25 +938,44 @@ function drawRain(ctx, map, w, h) {
   const yFirst = Math.max(0, Math.floor(tileY(latTop))), yLast = Math.min(n - 1, Math.floor(tileY(latBottom)));
   let xFirst = Math.floor((lonLeft + 180) / 360 * n), xLast = Math.floor((lonRight + 180) / 360 * n);
   if (worldFits(view, w)) { xFirst = Math.max(0, xFirst); xLast = Math.min(n - 1, xLast); }   // one Earth: no repeats
-  ctx.globalAlpha = map.cfg.rainOpacity / 100;
   for (let x = xFirst; x <= xLast; x++) {
-    const left = toX(x / n * 360 - 180), width = 360 / n * ppd;     // x unwrapped: tiles repeat round the world
-    const tx = ((x % n) + n) % n;
+    const left = Math.floor(toX(x / n * 360 - 180)), right = Math.ceil(toX((x + 1) / n * 360 - 180));   // whole pixels: no seams
+    const tx = ((x % n) + n) % n;                                // x unwrapped: tiles repeat round the world
     for (let y = yFirst; y <= yLast; y++) {
-      let img = rainTile(rainNow, z, tx, y);
-      if (!ready(img) && rainBefore) img = rainImages.get(rainBefore.replace("{z}", z).replace("{x}", tx).replace("{y}", y));
+      const img = tileAt(tx, y);
       if (!ready(img)) continue;
       for (let s = 0; s < STRIPS; s++) {
-        const top = toY(latOf(y + s / STRIPS)), bottom = toY(latOf(y + (s + 1) / STRIPS));
-        ctx.drawImage(img, 0, s * 256 / STRIPS, 256, 256 / STRIPS, left, top, width, bottom - top);
+        const top = Math.floor(toY(latOf(y + s / STRIPS))), bottom = Math.ceil(toY(latOf(y + (s + 1) / STRIPS)));
+        ctx.drawImage(img, 0, s * 256 / STRIPS, 256, 256 / STRIPS, left, top, right - left, bottom - top);
       }
     }
   }
-  ctx.globalAlpha = 1;
-  ctx.font = "11px 'Segoe UI', system-ui, sans-serif";       // RainViewer's free use asks for a credit
-  ctx.fillStyle = "rgba(255,255,255,0.7)";
-  ctx.textBaseline = "bottom";
-  ctx.fillText("Rain: RainViewer", 6, h - 4);
+}
+
+// Streets: OpenStreetMap's standard tiles, see-through over the NASA picture at the map's
+// streetsOpacity (0 = off), only past its streetsFromZoom: up to it, just the NASA picture. Their use policy asks for the credit and light use: tiles load
+// only for the view, at about the map's own detail, and stay cached in the browser.
+const STREET_TILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const STREET_MAX_TILE_ZOOM = 19, STREET_KEEP = 300;
+const streetImages = new Map();           // url -> Image, oldest first
+
+function streetTile(z, x, y) {
+  const url = STREET_TILES.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+  let img = streetImages.get(url);
+  if (img) { streetImages.delete(url); streetImages.set(url, img); return img; }   // used again: newest
+  img = new Image();
+  img.onload = gibsSoon;                  // redraws the picture layer, where the streets are
+  img.src = url;
+  streetImages.set(url, img);
+  if (streetImages.size > STREET_KEEP) streetImages.delete(streetImages.keys().next().value);
+  return img;
+}
+
+function drawStreets(ctx, map, w, h) {
+  if (!(map.cfg.streetsOpacity > 0) || map.view.zoom <= map.cfg.streetsFromZoom) return;
+  const z = Math.min(STREET_MAX_TILE_ZOOM, Math.max(0, Math.round(map.view.zoom) + 1));
+  drawMercatorTiles(ctx, map.view, w, h, z, map.cfg.streetsOpacity / 100, (tx, y) => streetTile(z, tx, y));
+  credit(ctx, "© OpenStreetMap contributors", 6, h - 18, "left");   // above the rain's credit; the ⚙ is bottom right
 }
 
 function drawRadar(map) {
@@ -843,9 +983,9 @@ function drawRadar(map) {
   if (!w || !h) return;
   const { ctx } = prepare(map.layers.radar, w, h);
   const ppd = pixelsPerDegree(map.view.zoom);
-  if (map.cfg.rain) drawRain(ctx, map, w, h);
+  drawRain(ctx, map, w, h);                                   // the rain feeds it has ticked
   ctx.globalAlpha = RADAR_OPACITY;
-  for (const key of map.cfg.feeds) {
+  for (const key of map.cfg.feeds.filter(k => !isRainFeed(k))) {   // rain: drawRain
     for (const item of GEO.feeds[key]?.items ?? []) {
       if (!item.image || !item.bounds) continue;
       const img = overlayImage(item.image);
@@ -867,6 +1007,7 @@ function drawPicture(map) {
   ctx.fillRect(0, 0, w, h);
   const view = map.view;
   if (ready(mapImages.day)) drawWorld(ctx, mapImages.day, view, w, h);
+  drawTiles(ctx, "day", view, w, h);                          // sharper, zoomed in
   if (ready(mapImages.night)) {                               // city lights on the night side
     map.night ??= document.createElement("canvas");
     const off = map.night;
@@ -876,13 +1017,16 @@ function drawPicture(map) {
     o.globalCompositeOperation = "source-over";
     o.clearRect(0, 0, w, h);
     drawWorld(o, mapImages.night, view, w, h);
+    drawTiles(o, "night", view, w, h, nightIn);
     o.globalCompositeOperation = "destination-in";
     o.imageSmoothingEnabled = true;
     drawWorld(o, getNightMask(), view, w, h);
     o.globalCompositeOperation = "source-over";
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.drawImage(off, 0, 0);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
+  drawStreets(ctx, map, w, h);                                // see-through streets over day and night
 }
 
 function project(map) {
@@ -1224,11 +1368,18 @@ function dragToChange(handle, map, what) {
 function openMapPopup(index, anchor) {
   const cfg = layout().maps[index];
   if (!cfg) return;
-  const again = () => { const gear = mapsOnScreen[index]?.el.querySelector(".map-gear"); if (gear) openMapPopup(index, gear); else closePopup(); };
+  const again = () => {                                      // the popup is rebuilt: keep the feed list where it was scrolled
+    const scrolled = popup.querySelector(".picker")?.scrollTop ?? 0;
+    const gear = mapsOnScreen[index]?.el.querySelector(".map-gear");
+    if (!gear) { closePopup(); return; }
+    openMapPopup(index, gear);
+    const picker = popup.querySelector(".picker");
+    if (picker) picker.scrollTop = scrolled;
+  };
   const edit = fn => { change(l => fn(l.maps[index])); again(); };
   const choice = (current, options, set) => options.map(([value, text]) =>
     el("button", { class: current === value ? "on" : "", textContent: text, onclick: () => edit(m => set(m, value)) }));
-  const feedKeys = Object.keys(GEO.feeds).filter(k => GEO.feeds[k].format !== "rainviewer" && !GEO.feeds[k].rain);   // the rain layer has its own switch
+  const feedKeys = Object.keys(GEO.feeds);
   const center = cfg.center === "follow" ? "follow" : cfg.center && typeof cfg.center === "object" ? "here" : "location";
   const live = mapsOnScreen[index];
   const docked = cfg.placement === "docked";
@@ -1246,11 +1397,17 @@ function openMapPopup(index, anchor) {
       return el("div", { class: none ? "dim" : "", title: f.failed ?? "" },
                 el("label", {}, box, colour, " " + f.name + (f.failed ? " (failing)" : none ? " (none now)" : "")));
     })),
-    el("div", { class: "line" }, el("label", { textContent: "Rain" }),
-       ...choice(cfg.rain, [[true, "On"], [false, "Off"]], (m, v) => { m.rain = v; }),
+    el("div", { class: "line" }, el("label", { textContent: "Rain opacity" }),
        el("input", { type: "number", min: 10, max: 100, step: 5, value: cfg.rainOpacity, title: "How see-through the rain is",
          onchange: e => { const o = Number(e.target.value); if (o >= 10 && o <= 100) edit(m => { m.rainOpacity = o; }); } }),
-       el("span", { class: "note", textContent: rainTiles() ? "% opaque" : "% opaque (no rain data yet)" })),
+       el("span", { class: "note", textContent: "% opaque" })),
+    el("div", { class: "line" }, el("label", { textContent: "Streets" }),
+       el("input", { type: "number", min: 0, max: 100, step: 5, value: cfg.streetsOpacity, title: "OpenStreetMap over the picture: how opaque (0 = off)",
+         onchange: e => { const o = Number(e.target.value); if (o >= 0 && o <= 100) edit(m => { m.streetsOpacity = o; }); } }),
+       el("span", { class: "note", textContent: "% opaque (0 = off), past zoom" }),
+       el("input", { type: "number", min: MIN_ZOOM, max: MAX_ZOOM, step: 0.5, value: cfg.streetsFromZoom,
+         title: "Up to this zoom only the NASA picture shows; past it, the streets",
+         onchange: e => { const z = Number(e.target.value); if (z >= MIN_ZOOM && z <= MAX_ZOOM) edit(m => { m.streetsFromZoom = z; }); } })),
     el("div", { class: "line" }, el("label", { textContent: "Rain up to zoom" }),
        el("span", { class: "note", textContent: "satellite" }),
        el("input", { type: "number", min: MIN_ZOOM, max: MAX_ZOOM, step: 0.5, value: cfg.rainSatelliteMaxZoom,
@@ -1269,7 +1426,7 @@ function openMapPopup(index, anchor) {
     el("div", { class: "line" }, el("label", { textContent: "Zoom" }),
        el("input", { type: "number", min: MIN_ZOOM, max: MAX_ZOOM, step: 0.25, value: cfg.zoom,
          onchange: e => { const z = Number(e.target.value); if (z >= MIN_ZOOM && z <= MAX_ZOOM) edit(m => { m.zoom = z; }); } }),
-       el("span", { class: "note", textContent: cfg.center === "follow" ? "used when there's nothing to follow" : "1 = whole world, 8 = a county (the picture blurs past 5)" })),
+       el("span", { class: "note", textContent: cfg.center === "follow" ? "used when there's nothing to follow" : "1 = whole world, 8 = a county, 14 = streets" })),
     el("div", { class: "line" }, el("label", { textContent: "Placement" }),
        ...choice(cfg.placement, [["docked", "Docked"], ["floating", "Floating"]], (m, v) => {
          if (v === "floating" && live) { const r = live.el.getBoundingClientRect();
@@ -1298,7 +1455,7 @@ function addMap() {
 
 function newMap(feeds) {
   return { feeds, center: null, zoom: 1, placement: "docked", side: "right", size: 35, push: true,
-           x: 100, y: 100, w: 600, h: 380, rain: false, rainOpacity: 70,
+           x: 100, y: 100, w: 600, h: 380, rainOpacity: 70, streetsOpacity: 0, streetsFromZoom: 5,   // streets: 0 = off; only past zoom 5
            rainSatelliteMaxZoom: 4, rainRadarMaxZoom: 8,     // rain hides past these zooms
            colours: {} };                                     // feed key -> "#rrggbb", overriding FORMAT_COLOURS
 }
@@ -1314,8 +1471,10 @@ function normaliseMap(m) {
   n.side = ["left", "right", "top", "bottom"].includes(m.side) ? m.side : "right";
   n.size = isFinite(m.size) ? Math.min(90, Math.max(10, +m.size)) : 35;
   n.push = m.push !== false;
-  n.rain = m.rain === true;
+  if ("rain" in m || m.oldRain) n.oldRain = true;      // saved with the old Rain switch: untickRainOnOldMaps
   n.rainOpacity = isFinite(m.rainOpacity) ? Math.min(100, Math.max(10, +m.rainOpacity)) : 70;
+  n.streetsOpacity = isFinite(m.streetsOpacity) ? Math.min(100, Math.max(0, +m.streetsOpacity)) : 0;
+  if (isFinite(m.streetsFromZoom)) n.streetsFromZoom = clampZoom(+m.streetsFromZoom);
   for (const k of ["rainSatelliteMaxZoom", "rainRadarMaxZoom"]) if (isFinite(m[k])) n[k] = clampZoom(+m[k]);
   if (m.colours && typeof m.colours === "object") {
     n.colours = Object.fromEntries(Object.entries(m.colours).filter(([, c]) => /^#[0-9a-f]{6}$/i.test(c)));
@@ -1520,6 +1679,13 @@ function showMessage(html) {
   m.innerHTML = html;
 }
 
+// Maps saved when rain had its own On/Off switch: their rain feeds start unticked (Chris,
+// 2026-11-19). Needs geo.js to know which feeds are rain, so it runs once geo.js has loaded.
+function untickRainOnOldMaps() {
+  if (!saved?.maps.some(m => m.oldRain)) return;
+  change(l => { for (const m of l.maps) { if (m.oldRain) m.feeds = m.feeds.filter(k => !isRainFeed(k)); delete m.oldRain; } });
+}
+
 let firstLoad = true;
 async function refresh() {
   const news = await loadNews();
@@ -1533,7 +1699,7 @@ async function refresh() {
   showMessage(Object.values(NEWS_FEEDS).some(f => f.stories.length) ? "" : "osint hasn't fetched any feeds yet.");
   const geo = await loadScript("geo.js", "GEO");   // small; read even with no maps, so Add map knows the feeds
   const geoNew = geo && geo.updated !== geoUpdated;
-  if (geo) { GEO = geo; geoUpdated = geo.updated; }
+  if (geo) { GEO = geo; geoUpdated = geo.updated; untickRainOnOldMaps(); }
   if (firstLoad) { firstLoad = false; render(); }
   else {
     refreshRows(defaultBefore);

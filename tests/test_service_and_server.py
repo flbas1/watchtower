@@ -70,7 +70,8 @@ def test_failed_feed_retries_longer_each_time_then_recovers():
     try:
         assert wait_for(lambda: updated == ["flaky"], seconds=8)                       # back, and the page is told
         gaps = [b - a for a, b in zip(flaky.times, flaky.times[1:])]
-        assert 0.5 < gaps[0] < 1.2 and gaps[1] > gaps[0] * 1.5                       # the second wait is about twice the first
+        # each wait is its retry time (0.6 s, then doubled: 1.2 s) plus up to one 0.5 s nap
+        assert 0.55 < gaps[0] < 1.3 and 1.15 < gaps[1] < 1.9
         assert service.failed() == {} and list(service.latest("flaky")["title"]) == ["back"]
     finally:
         service.stop()

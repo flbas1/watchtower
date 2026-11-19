@@ -151,6 +151,17 @@ feed_catalog:
     update_minutes: 30
     format: ioda_outages
     hours: 24
+  fire_hotspots:
+    name: Fire hotspots (satellite)
+    update_minutes: 60
+    format: firms_hotspots
+    url: https://firms.modaps.eosdis.nasa.gov/data/active_fire/modis-c6.1/csv/MODIS_C6_1_Global_24h.csv
+    min_confidence: 80
+  us_wildfires:
+    name: US wildfires
+    update_minutes: 30
+    format: nifc_wildfires
+    url: https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query?where=IncidentTypeCategory%3D%27WF%27+AND+FireOutDateTime+IS+NULL&outFields=*&outSR=4326&f=json
   exploited_vulnerabilities:
     name: Exploited vulnerabilities (CISA)
     update_minutes: 360

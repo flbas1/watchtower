@@ -46,13 +46,16 @@ src/watchtower/
   feed_service.py  runs every feed on its own schedule on 4 worker threads; skip keywords
   feeds.py         the feed readers (from osint): rss, NHC, USGS, NWS alerts and storm
                    reports, adsb.fi flights, radar, RainViewer, NASA GIBS, GDELT, FAA TFRs
-                   and airport status, CISA KEV, IODA, CelesTrak satellites, gpsjam
+                   and airport status, CISA KEV, IODA, CelesTrak satellites, gpsjam,
+                   NASA FIRMS fire hotspots, NIFC US wildfires
   icons.py         finds each news feed's icon (from osint), cached in web/icons
   web_news.py      writes web/news.js, web/geo.js and web/layers/*.png (from osint)
   server.py        serves the web folder, and only it
   sun.py           where the sun is (from osint)
 web/
   index.html       the page (from osint-web); images/ the NASA day and night pictures
+                   (zoomed in, the page loads sharper tiles of them from NASA GIBS, and
+                   OpenStreetMap's streets over them where a map's Streets setting is on)
   news.js, geo.js, icons/, layers/   written by watchtower (not in git)
 deploy/
   watchtower.service   systemd unit for a server or container

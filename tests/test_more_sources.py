@@ -162,3 +162,32 @@ def test_marquee_setting_and_feeds_without_places():
                             "vip": {"format": "adsb_fi", "marquee": True}, "tfr": {"format": "faa_tfr", "marquee": False}}}
     assert web_feeds(cfg) == {"news", "kev", "vip"}
     assert geo_feeds(cfg) == {"planes", "vip", "tfr"}                                  # news and the CVE list have no places
+
+
+def test_fire_hotspots_over_the_confidence_and_in_the_area():
+    csv = ("latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version,bright_t31,frp,daynight\n"
+           "26.5,-80.9,330.5,1,1,2026-11-19,0715,T,95,6.1NRT,290,42.4,N\n"
+           "26.6,-80.8,310.0,1,1,2026-11-19,0715,T,40,6.1NRT,290,5.0,N\n"
+           "-23.5,-47.7,319.3,1,1,2026-11-19,1840,A,90,6.1NRT,290,37.0,D\n")
+    settings = {"name": "Fires", "format": "firms_hotspots", "url": "https://firms.example/MODIS.csv", "area": [24, -88, 31, -79]}
+    items = Feed("fires", settings).fetch(client_for([("MODIS.csv", csv)]))
+    assert list(items["title"]) == ["Fire hotspot: 42 MW, 95% confidence"]       # 40% and outside the area left out
+    assert items["time"][0] == pd.Timestamp("2026-11-19 07:15", tz="UTC")
+    assert items["magnitude"][0] == 42.4 and "night" in items["details"][0]
+
+
+def test_us_wildfires_named_with_acres_and_containment():
+    answer = {"features": [
+        {"attributes": {"IncidentName": "Aspen Acres", "IncidentSize": 102007, "PercentContained": 96, "POOCounty": "Custer",
+                        "POOState": "US-CO", "FireCause": "Human", "FireDiscoveryDateTime": 1782734686000,
+                        "ModifiedOnDateTime_dt": 1794523967637, "UniqueFireIdentifier": "2026-COCUX-001160"},
+         "geometry": {"x": -105.07, "y": 38.02}},
+        {"attributes": {"IncidentName": "Moonlight Farm", "IncidentSize": None, "PercentContained": None,
+                        "UniqueFireIdentifier": "2026-PRDNR-000001"},
+         "geometry": {"x": -67.13, "y": 17.98}},
+        {"attributes": {"IncidentName": "No place"}, "geometry": None}]}
+    items = Feed("wf", {"name": "US wildfires", "format": "nifc_wildfires", "url": "https://nifc.example/query"}).fetch(
+        client_for([("nifc.example", answer)]))
+    assert list(items["title"]) == ["Aspen Acres fire: 102,007 acres, 96% contained", "Moonlight Farm fire: size unknown"]
+    assert items["details"][0] == "Custer County, CO · cause: human · found 2026-06-29"
+    assert (items["lat"][0], items["lon"][0]) == (38.02, -105.07) and items["id"][1] == "2026-PRDNR-000001"
