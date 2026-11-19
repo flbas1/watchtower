@@ -1117,9 +1117,14 @@ class Feed:
         response = client.get(self.url, headers=headers, **self.auth.request_args())
         if response.status_code == 304:
             return None                                    # nothing changed since last time
+        # response.raise_for_status()
+        # self.etag = response.headers.get("ETag")
+        # return self.processor.process(client, response)
+
         response.raise_for_status()
+        result = self.processor.process(client, response)
         self.etag = response.headers.get("ETag")
-        return self.processor.process(client, response)
+        return result
 
 
 
