@@ -1,0 +1,1559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>osint-web</title>
+<style>
+  :root {
+    --row: 44px;          /* height of one marquee */
+    --gap: 4px;
+    --bg: #111;
+    --row-bg: #1d1d1d;
+    --text: #eee;
+    --dim: #888;
+    --badge: #555;
+    --badge-width: 132px; /* set from the layout's look.badgeWidth */
+    --icon-bg: transparent; /* set from the layout's look.iconBackground */
+    --panel: #262626;
+    --accent: #3a7bd5;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+               font: 18px/1.2 "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  body { position: relative; }
+  a { color: inherit; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* the screen: rows sit on fixed lines; #rows is exactly as tall as the lines that fit, so a
+     row sliding in or out past the edge is hidden */
+  #screen { position: absolute; left: var(--gap); right: var(--gap); top: var(--gap); bottom: var(--gap); }   /* set by layoutPage */
+  #rows { position: absolute; left: 0; right: 0; top: 0; overflow: hidden; }
+  #message { padding: 12px; color: #aaa; }
+  #message code { color: #eee; }
+
+  .marquee { position: absolute; left: 0; right: 0; height: var(--row); overflow: hidden; z-index: 1;
+             background: var(--row-bg); display: flex; align-items: center; }
+  .marquee.pinned { z-index: 2; }   /* rolling rows slide behind pinned ones */
+  .badge { flex: none; width: var(--badge-width); height: 100%; display: flex; align-items: center;
+           padding: 0 12px; background: var(--badge); font-weight: 600; font-size: 15px;
+           z-index: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+           cursor: pointer; user-select: none; }
+  .badge:hover { filter: brightness(1.25); }
+  /* icons sit at the right of the badge, so headlines start in line */
+  .badge.icon { padding: 0 6px; background: var(--icon-bg); justify-content: flex-end; }
+  .badge.icon img { max-height: calc(var(--row) - 10px); max-width: calc(var(--badge-width) - 12px); display: block; }
+  .track { position: relative; flex: 1; height: 100%; overflow: hidden; }
+  .empty { color: var(--dim); font-style: italic; }
+
+  /* static: one headline at a time, slides out left as the next slides in */
+  .story { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 12px;
+           white-space: nowrap; overflow: hidden; }
+  .story a { overflow: hidden; text-overflow: ellipsis; }
+
+  /* crawl: one long line moving right to left */
+  .crawl { position: absolute; top: 0; left: 0; height: 100%; display: flex;
+           align-items: center; white-space: nowrap; will-change: transform; }
+  .crawl a { padding: 0 12px; }
+  .crawl a::after { content: "\2022"; padding-left: 24px; color: var(--dim); display: inline-block; }
+
+  /* maps */
+  .map { position: absolute; z-index: 5; background: #000; border: 1px solid #333;
+         display: flex; flex-direction: column; overflow: hidden; }
+  .map.floating { z-index: 6; box-shadow: 0 6px 24px rgba(0,0,0,.7); }
+  .map-bar { height: 22px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 2px 0 8px;
+             background: #222; color: #bbb; font-size: 12px; user-select: none; }
+  .map.floating .map-bar { cursor: move; }
+  .map-bar span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .map-gear { background: none; border: none; color: #bbb; font-size: 14px; cursor: pointer; padding: 0 4px; }
+  .map-gear:hover { color: #fff; }
+  .map-body { flex: 1; min-height: 0; position: relative; cursor: grab; touch-action: none; }
+  .map-body canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+  .map-grip { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; cursor: nwse-resize;
+              background: linear-gradient(135deg, transparent 50%, #888 50%); }
+  #popup .picker label { cursor: pointer; display: flex; align-items: center; gap: 4px; }
+  #popup .picker input.swatch { width: 18px; height: 16px; padding: 0; border: 1px solid #666; background: none; cursor: pointer; }
+
+  /* the gear button and the popups */
+  #gear { position: fixed; right: 8px; bottom: 8px; z-index: 20; width: 34px; height: 34px;
+          border-radius: 50%; border: 1px solid #444; background: var(--panel); color: var(--text);
+          font-size: 18px; cursor: pointer; opacity: 0.45; }
+  #gear:hover { opacity: 1; }
+  #popup { position: fixed; z-index: 30; width: 440px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto;
+           background: var(--panel); border: 1px solid #555; border-radius: 6px; padding: 12px;
+           box-shadow: 0 6px 24px rgba(0,0,0,.6); font-size: 14px; display: none; }
+  #popup h3 { margin: 0 0 10px; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #popup .line { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  #popup .line > label:first-child { width: 110px; color: #bbb; }
+  #popup button { background: #383838; color: var(--text); border: 1px solid #555; border-radius: 4px;
+                  padding: 4px 10px; font: inherit; cursor: pointer; }
+  #popup button:hover { background: #454545; }
+  #popup button.on { background: var(--accent); border-color: var(--accent); }
+  #popup button.danger { border-color: #a33; color: #f88; }
+  #popup input[type=number], #popup input[type=search] { background: #1a1a1a; color: var(--text);
+                  border: 1px solid #555; border-radius: 4px; padding: 4px 6px; font: inherit; }
+  #popup input[type=number] { width: 80px; }
+  #popup input[type=search] { width: 100%; }
+  #popup .picker { max-height: 180px; overflow: auto; border: 1px solid #444; margin-top: 4px; }
+  #popup .picker div { padding: 3px 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #popup .picker div:hover { background: #3a3a3a; }
+  #popup .picker div.current { background: var(--accent); }
+  #popup .picker div.dim { color: var(--dim); }
+  #popup .note { color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="screen"><div id="rows"></div></div>
+<button id="gear" title="Page settings">&#9881;</button>
+<div id="popup"></div>
+
+<script>
+// =============================================================================
+// Layout: what's shown, kept in this browser's storage (localStorage).
+//   { speeds: {staticSeconds, crawlPixelsPerSecond, rollSeconds},
+//     look: {badgeWidth, iconBackground},
+//     rows: [{feed, mode: "static"|"crawl", pinned, slot, staticSeconds, crawlPixelsPerSecond}],
+//     maps: [{feeds, center: null (location) | "follow" | {lat, lon}, zoom, placement: "docked"|"floating",
+//             side, size (% of the window), push (make room for the rows, or cover them), x, y, w, h (floating),
+//             rain (the global rain layer on or off), rainOpacity (%), rainSatelliteMaxZoom,
+//             rainRadarMaxZoom (rain hides past these), colours {feed: "#rrggbb"}}] }
+// A row's own staticSeconds / crawlPixelsPerSecond (null = the global speed) override the global.
+// A pinned row's slot is the screen line it holds, counted from the nearer edge:
+// {edge: "top"|"bottom", line: 0, 1, ...}, so rows pinned near the bottom stay there when the
+// window is resized. Unpinned rows (slot null) roll, in list order, through the free lines.
+// Until something is changed nothing is stored, and the default layout follows news.js.
+// =============================================================================
+const STORE_KEY = "osint-web.layout";
+const DEFAULT_SPEEDS = { staticSeconds: 8, crawlPixelsPerSecond: 80, rollSeconds: 8,
+                         slideSeconds: 0.6 };   // how long a static row's headline takes to slide out and the next in
+const DEFAULT_LOOK = { badgeWidth: 132,                  // px: every row's icon or name badge (the widest icon is 120 + padding)
+                       iconBackground: "transparent" };  // behind an icon: transparent, black or white
+const ICON_BACKGROUNDS = { transparent: "transparent", black: "#000", white: "#fff" };
+const DEFAULT_CRAWLS = 3;     // the default layout: the first 3 feeds crawl, pinned to the bottom lines
+const SLIDE_MS = 600;         // how long a roll of the rows takes (a headline's slide is the page's Slide time)
+const RELOAD_SECONDS = 60;    // how often news.js (written by osint) is read again
+
+let NEWS_FEEDS = {};          // key -> {name, icon, failed, stories: [{title, url, time}]}, from news.js
+let topRolling = 0;           // list index of the rolling row on the first free line
+let lines = 0;                // how many lines fit on the screen
+let saved = null;             // the stored layout, or null while the default is in use (read at startup, below)
+
+function positive(x) { return typeof x === "number" && isFinite(x) && x > 0 ? x : null; }
+
+function validSlot(slot) {
+  return slot && (slot.edge === "top" || slot.edge === "bottom") && Number.isInteger(slot.line) && slot.line >= 0
+    ? { edge: slot.edge, line: slot.line } : null;
+}
+
+function normalise(layout) {
+  const speeds = { ...DEFAULT_SPEEDS };
+  for (const k of Object.keys(DEFAULT_SPEEDS)) speeds[k] = positive(layout?.speeds?.[k]) ?? DEFAULT_SPEEDS[k];
+  const look = { badgeWidth: positive(layout?.look?.badgeWidth) ?? DEFAULT_LOOK.badgeWidth,
+                 iconBackground: layout?.look?.iconBackground in ICON_BACKGROUNDS ? layout.look.iconBackground
+                                                                                  : DEFAULT_LOOK.iconBackground };
+  const rows = (Array.isArray(layout?.rows) ? layout.rows : [])
+    .filter(r => r && typeof r.feed === "string")
+    .map(r => ({ feed: r.feed, mode: r.mode === "crawl" ? "crawl" : "static", pinned: !!r.pinned,
+                 slot: r.pinned ? validSlot(r.slot) : null,
+                 staticSeconds: positive(r.staticSeconds), crawlPixelsPerSecond: positive(r.crawlPixelsPerSecond) }));
+  // An older layout pinned rows by their place in the list: pinned rows before the first
+  // unpinned one sat at the top, the rest at the bottom. Give those rows the same lines.
+  const first = rows.findIndex(r => !r.pinned);
+  const old = rows.filter(r => r.pinned && !r.slot);
+  const top = old.filter(r => first < 0 || rows.indexOf(r) < first);
+  const bottom = old.filter(r => !top.includes(r));
+  top.forEach((r, n) => { r.slot = { edge: "top", line: n }; });
+  bottom.forEach((r, n) => { r.slot = { edge: "bottom", line: bottom.length - 1 - n }; });
+  const maps = (Array.isArray(layout?.maps) ? layout.maps : []).map(normaliseMap).filter(Boolean);
+  return { speeds, look, rows, maps };
+}
+
+function loadSaved() {
+  try {
+    const text = localStorage.getItem(STORE_KEY);
+    return text ? normalise(JSON.parse(text)) : null;
+  } catch { return null; }
+}
+
+function defaultLayout() {
+  const keys = Object.keys(NEWS_FEEDS).filter(k => NEWS_FEEDS[k].stories.length);
+  const crawls = keys.slice(0, DEFAULT_CRAWLS);
+  const row = (feed, mode, slot) => ({ feed, mode, pinned: !!slot, slot, staticSeconds: null, crawlPixelsPerSecond: null });
+  return { speeds: { ...DEFAULT_SPEEDS }, look: { ...DEFAULT_LOOK }, maps: [],
+           rows: [...keys.slice(DEFAULT_CRAWLS).map(k => row(k, "static", null)),
+                  ...crawls.map((k, n) => row(k, "crawl", { edge: "bottom", line: crawls.length - 1 - n }))] };
+}
+
+function layout() { return saved ?? defaultLayout(); }
+
+// Every change goes through here: the default becomes a stored layout the first time.
+// `edit(next, keep)` may set keep.top to the row (object) that should be on the first free
+// line afterwards; otherwise the row that's there now stays there.
+function change(edit) {
+  const next = structuredClone(layout());
+  const keep = { top: next.rows[topRolling] };
+  edit(next, keep);
+  const at = next.rows.indexOf(keep.top);              // normalise keeps the order, so indexes carry over
+  saved = normalise(next);
+  topRolling = at >= 0 ? at : Math.min(topRolling, Math.max(0, saved.rows.length - 1));
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(saved)); } catch { /* storage full or blocked */ }
+  render();
+}
+
+// A change that doesn't need the page laid out again (a map dragged, panned or zoomed).
+function quietly(edit) {
+  const next = structuredClone(layout());
+  edit(next);
+  saved = normalise(next);
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(saved)); } catch { /* storage full or blocked */ }
+}
+
+// The slot (counted from the nearer edge) for screen line `s` of `count` lines.
+function slotFor(s, count) {
+  return s < count / 2 ? { edge: "top", line: s } : { edge: "bottom", line: count - 1 - s };
+}
+
+// What goes on which screen line, for `count` lines:
+//   pinned: Map screen line -> list index;  free: the other lines, top to bottom;
+//   rolling: the unpinned list indexes in order;  first: position in `rolling` of the row on
+//   the first free line;  shown: [[list index, screen line], ...] for the rolling rows on screen.
+function arrange(rows, count) {
+  const pinned = new Map();
+  rows.forEach((r, i) => {
+    if (!r.pinned) return;
+    const want = Math.min(count - 1, r.slot.edge === "top" ? r.slot.line : count - 1 - r.slot.line);
+    for (let d = 0; d < count; d++) {                    // taken (two rows want one line): the nearest free one
+      for (const s of d ? [want + d, want - d] : [want]) {
+        if (s >= 0 && s < count && !pinned.has(s)) { pinned.set(s, i); return; }
+      }
+    }                                                    // more pinned rows than lines: not shown
+  });
+  const free = [...Array(Math.max(0, count)).keys()].filter(s => !pinned.has(s));
+  const rolling = rows.map((r, i) => i).filter(i => !rows[i].pinned);
+  let first = 0;
+  if (rolling.length > free.length) {                    // the top row, or the next unpinned one after it
+    first = rolling.findIndex(i => i >= topRolling);
+    if (first < 0) first = 0;
+  }
+  const shown = [];
+  for (let k = 0; k < Math.min(free.length, rolling.length); k++) shown.push([rolling[(first + k) % rolling.length], free[k]]);
+  return { pinned, free, rolling, first, shown };
+}
+
+// =============================================================================
+// Reading news.js. The page is opened from disk, where fetch() can't read files but a
+// <script> can load one.
+// =============================================================================
+function loadScript(file, variable) {
+  return new Promise(resolve => {
+    const s = document.createElement("script");
+    s.src = file + "?t=" + Date.now();          // never the browser's cached copy
+    s.onload = () => { s.remove(); resolve(window[variable] || null); };
+    s.onerror = () => { s.remove(); resolve(null); };
+    document.head.appendChild(s);
+  });
+}
+function loadNews() { return loadScript("news.js", "NEWS"); }
+
+function stories(key) { return NEWS_FEEDS[key]?.stories ?? []; }
+function feedName(key) { return NEWS_FEEDS[key]?.name ?? key; }
+
+function link(story) {
+  const a = document.createElement("a");
+  a.textContent = story.title;
+  a.title = story.title;
+  if (story.url) { a.href = story.url; a.target = "_blank"; a.rel = "noopener"; }
+  return a;
+}
+
+function emptyText(key) {
+  const feed = NEWS_FEEDS[key];
+  if (!feed) return "not in osint's feed list";
+  return feed.failed ? `feed stopped: ${feed.failed}` : "no stories yet";
+}
+
+// =============================================================================
+// One row
+// =============================================================================
+function makeRow(index) {
+  const cfg = layout().rows[index];
+  const row = document.createElement("div");
+  row.className = "marquee";
+  row.index = index;
+  row.feed = cfg.feed;
+  const badge = document.createElement("div");
+  const icon = NEWS_FEEDS[cfg.feed]?.icon;
+  if (icon) {
+    badge.className = "badge icon";
+    const img = document.createElement("img");
+    img.src = icon;
+    img.alt = feedName(cfg.feed);
+    img.onerror = () => { badge.className = "badge"; badge.textContent = feedName(cfg.feed); };   // icon file missing
+    badge.appendChild(img);
+  } else {
+    badge.className = "badge";
+    badge.textContent = feedName(cfg.feed);
+  }
+  badge.title = feedName(cfg.feed) + " (click for settings)";
+  badge.addEventListener("click", e => { e.stopPropagation(); openRowPopup(index, badge); });
+  const track = document.createElement("div");
+  track.className = "track";
+  row.append(badge, track);
+  if (cfg.mode === "crawl") fillCrawl(row, track, cfg); else fillStatic(row, track, cfg);
+  return row;
+}
+
+function staticSeconds(cfg) { return cfg.staticSeconds ?? layout().speeds.staticSeconds; }
+function crawlSpeed(cfg) { return cfg.crawlPixelsPerSecond ?? layout().speeds.crawlPixelsPerSecond; }
+
+// static: one headline at a time, slides out left as the next slides in
+function fillStatic(row, track, cfg) {
+  let i = 0;
+  let current = addStory(track, cfg.feed, 0);
+  function next() {
+    const list = stories(cfg.feed);                 // read every time: news.js may have changed
+    if (list.length < 2) {                          // stories arrived for an empty row: show the first
+      if (list.length && current.classList.contains("empty")) { current.remove(); current = addStory(track, cfg.feed, 0); }
+      return;
+    }
+    // a slide that never finished (the tab was in the background) leaves an old story behind
+    for (const el of [...track.children]) if (el !== current) el.remove();
+    i = (i + 1) % list.length;
+    const incoming = addStory(track, cfg.feed, i);
+    const opts = { duration: layout().speeds.slideSeconds * 1000, easing: "ease-in-out", fill: "forwards" };
+    const leaving = current;
+    leaving.animate([{ transform: "translateX(0)" }, { transform: "translateX(-100%)" }], opts)
+           .finished.then(() => leaving.remove(), () => {});
+    incoming.animate([{ transform: "translateX(100%)" }, { transform: "translateX(0)" }], opts);
+    current = incoming;
+  }
+  row.startTimers = delay => {
+    row.timeout = setTimeout(() => { next(); row.timer = setInterval(next, staticSeconds(cfg) * 1000); }, delay);
+  };
+  row.stop = () => { clearTimeout(row.timeout); clearInterval(row.timer); };
+}
+
+function addStory(track, key, i) {
+  const el = document.createElement("div");
+  el.className = "story";
+  const list = stories(key);
+  if (list.length) el.appendChild(link(list[i % list.length]));
+  else { el.classList.add("empty"); el.textContent = emptyText(key); }
+  track.appendChild(el);
+  return el;
+}
+
+// crawl: one long line moving right to left. The list is in it twice, so moving by exactly
+// one list's width loops without a jump.
+function fillCrawl(row, track, cfg) {
+  const line = document.createElement("div");
+  line.className = "crawl";
+  const list = stories(cfg.feed);
+  if (list.length) for (const story of [...list, ...list]) line.appendChild(link(story));
+  else { const s = document.createElement("span"); s.className = "empty"; s.textContent = emptyText(cfg.feed); s.style.padding = "0 12px"; line.appendChild(s); }
+  track.appendChild(line);
+  row.shown = list.map(s => s.title).join("\n");    // to tell later whether the stories changed
+  row.stop = () => line.getAnimations().forEach(a => a.cancel());
+  row.startTimers = () => {                         // once it's in the page, its width is known
+    if (!list.length) return;
+    const oneList = line.scrollWidth / 2;
+    if (!oneList) return;
+    line.animate([{ transform: "translateX(0)" }, { transform: `translateX(-${oneList}px)` }],
+                 { duration: oneList / crawlSpeed(cfg) * 1000, iterations: Infinity });
+  };
+}
+
+// =============================================================================
+// The screen: every row sits on a line; rolling rows move up through the free lines
+// =============================================================================
+const screen = document.getElementById("screen");
+const rowsBox = document.getElementById("rows");
+
+function cssPx(name) { return parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name)); }
+function step() { return cssPx("--row") + cssPx("--gap"); }
+function lineTop(s) { return s * step(); }
+function linesThatFit() { return Math.max(0, Math.floor((screen.clientHeight + cssPx("--gap")) / step())); }
+
+function place(index, line, delayMs = 0) {
+  const row = makeRow(index);
+  row.line = line;
+  row.style.top = lineTop(line) + "px";
+  if (layout().rows[index].pinned) row.classList.add("pinned");
+  rowsBox.appendChild(row);
+  row.startTimers(delayMs);
+  return row;
+}
+
+function allRows() { return [...rowsBox.querySelectorAll(".marquee")].filter(r => !r.leaving); }
+function rowOnLine(line) { return allRows().find(r => r.line === line); }
+
+function render() {
+  renderMaps(layoutPage());
+  renderRows();
+}
+
+function renderRows() {
+  const look = layout().look;
+  document.documentElement.style.setProperty("--badge-width", look.badgeWidth + "px");
+  document.documentElement.style.setProperty("--icon-bg", ICON_BACKGROUNDS[look.iconBackground]);
+  rowsBox.querySelectorAll(".marquee").forEach(r => r.stop());
+  rowsBox.replaceChildren();
+  lines = linesThatFit();
+  rowsBox.style.height = Math.max(0, lines * step() - cssPx("--gap")) + "px";
+  const { pinned, shown, rolling, first } = arrange(layout().rows, lines);
+  if (rolling.length) topRolling = rolling[first];
+  let n = 0;
+  for (const [line, i] of [...pinned].sort((a, b) => a[0] - b[0])) place(i, line, (n++) * 700);
+  for (const [i, line] of shown) place(i, line, (n++) * 700);
+  restartRollTimer();
+}
+
+// One roll: the row on the first free line slides up out of sight (behind a pinned row, or
+// past the top edge), every other rolling row moves up to the free line above it (passing
+// behind any pinned row in between), and the next row slides in on the last free line.
+// The rows are put on their new lines at once; the slide is only the animation, so a tab in
+// the background (where animations don't run) still ends up right.
+function roll() {
+  if (popupOpen()) return;
+  const { free, rolling, first } = arrange(layout().rows, lines);
+  if (rolling.length <= free.length || !free.length) return;
+  const d = step();
+  const opts = { duration: SLIDE_MS, easing: "ease-in-out" };
+  const onFree = free.map(rowOnLine);
+  free.forEach((line, k) => {
+    const row = onFree[k];
+    if (!row) return;
+    const from = lineTop(line);
+    const to = k === 0 ? from - d : lineTop(free[k - 1]);
+    if (k === 0) {                                     // leaves
+      row.leaving = true;
+      setTimeout(() => { row.stop(); row.remove(); }, SLIDE_MS + 50);
+    } else {
+      row.line = free[k - 1];
+    }
+    row.style.top = to + "px";
+    row.animate([{ top: from + "px" }, { top: to + "px" }], opts);
+  });
+  const last = free[free.length - 1];
+  const incoming = place(rolling[(first + free.length) % rolling.length], last, staticSecondsGlobal() * 1000);
+  incoming.animate([{ top: (lineTop(last) + d) + "px" }, { top: lineTop(last) + "px" }], opts);
+  topRolling = rolling[(first + 1) % rolling.length];
+}
+
+function staticSecondsGlobal() { return layout().speeds.staticSeconds; }
+
+let rollTimer;
+function restartRollTimer() {
+  clearInterval(rollTimer);
+  rollTimer = setInterval(roll, layout().speeds.rollSeconds * 1000);
+}
+
+// Move a row one line up (-1) or down (+1) on screen.
+//   A pinned row moves to the next screen line (swapping with a pinned row there); the
+//   rolling rows flow around it.
+//   A rolling row swaps places with the rolling row above / below it, and stays in view.
+function moveRow(l, keep, index, dir) {
+  const rows = l.rows;
+  const { pinned, rolling, first, shown, free } = arrange(rows, lines);
+  const row = rows[index];
+  if (row.pinned) {
+    const at = [...pinned].find(([, i]) => i === index)?.[0];
+    if (at === undefined) return;
+    const to = at + dir;
+    if (to < 0 || to >= lines) return;
+    if (pinned.has(to)) rows[pinned.get(to)].slot = slotFor(at, lines);
+    row.slot = slotFor(to, lines);
+    return;
+  }
+  const k = shown.findIndex(([i]) => i === index);
+  if (k < 0) return;
+  const scrolls = rolling.length > free.length;
+  const pos = (first + k) % rolling.length;
+  const target = scrolls ? (pos + dir + rolling.length) % rolling.length : pos + dir;
+  if (target < 0 || target >= rolling.length) return;
+  [rows[rolling[target]], rows[index]] = [row, rows[rolling[target]]];
+  // Which row is on the first free line afterwards, by position in the rolling order:
+  if (scrolls && k === 0 && dir < 0) keep.top = row;                                   // it went up past the top: it stays on the top line
+  else if (scrolls && k === shown.length - 1 && dir > 0) keep.top = rows[rolling[(first + 1) % rolling.length]];   // roll one, so it stays on the bottom line
+  else keep.top = rows[rolling[first]];
+}
+
+// Pin a row on the line it's on now, or unpin it and keep it on that line (it joins the
+// rolling rows at that point in their order).
+function togglePin(l, keep, index) {
+  const rows = l.rows;
+  const row = rows[index];
+  const line = allRows().find(r => r.index === index)?.line;
+  if (!row.pinned) {
+    row.pinned = true;
+    row.slot = slotFor(line ?? 0, lines);
+    if (keep.top === row) {                                               // the rolling row after it takes the top free line
+      const after = rows.slice(index + 1).find(r => !r.pinned) ?? rows.find(r => !r.pinned && r !== row);
+      keep.top = after;
+    }
+    return;
+  }
+  row.pinned = false;
+  row.slot = null;
+  if (line === undefined) return;
+  // the rolling row on the nearest line above this one: this row goes right after it in the list
+  const above = allRows().filter(r => !r.classList.contains("pinned") && r.line < line).sort((a, b) => b.line - a.line)[0];
+  const after = above ? rows[above.index] : null;
+  rows.splice(index, 1);
+  if (after) rows.splice(rows.indexOf(after) + 1, 0, row);
+  else {                                                                  // nothing rolling above it: it becomes the top rolling row
+    const top = keep.top && !keep.top.pinned && keep.top !== row ? keep.top : null;
+    rows.splice(top ? rows.indexOf(top) : rows.length, 0, row);
+    keep.top = row;
+  }
+}
+
+// After news.js is read again: crawls whose stories changed are rebuilt in place (static
+// rows read the stories every time anyway). The default layout follows news.js, so it is
+// laid out again if its feeds changed.
+function refreshRows(defaultBefore) {
+  if (!saved && defaultBefore !== JSON.stringify(defaultLayout().rows)) { render(); return; }
+  for (const row of allRows()) {
+    if (row.shown === undefined) continue;
+    if (row.shown === stories(row.feed).map(s => s.title).join("\n")) continue;
+    row.stop();
+    const fresh = makeRow(row.index);
+    fresh.line = row.line;
+    fresh.style.top = row.style.top;
+    fresh.className = row.className;
+    row.replaceWith(fresh);
+    fresh.startTimers(0);
+  }
+}
+
+// =============================================================================
+// Maps: drawn by the page on a <canvas>, from NASA's Blue Marble (day) and Black Marble
+// (night lights) images, with osint's geo feeds (geo.js) on top. Same scale as osint's map
+// windows: the whole world is 1024 px wide at zoom 1, and each zoom step doubles it.
+// A map is only redrawn when something changes (data, a pan or zoom, a resize, the sun).
+// =============================================================================
+const WORLD_PIXELS_AT_ZOOM_1 = 1024;
+const MIN_ZOOM = 1, MAX_ZOOM = 8;          // the NASA images blur past 5, but areas and markers stay sharp (county level at 7-8)
+const FOLLOW_MAX_ZOOM = 2;                 // follow never zooms closer than this (as in osint)
+const FIT_MARGIN = 0.15;                   // follow leaves 15% free around the data
+const TWILIGHT_TOP = 3, TWILIGHT_BOTTOM = -6;   // sun height (degrees): full day above, full night below
+const SUN_REDRAW_SECONDS = 240;            // the night side moves 1 degree every 4 minutes
+const DAY_IMAGE = "images/bluemarble_200411.jpg";
+const NIGHT_IMAGE = "images/blackmarble_2016_5400x2700.jpg";
+const BAR = 22;                            // height of a map's title bar
+
+let GEO = { location: null, feeds: {} };   // from geo.js
+let geoUpdated = null;
+const mapImages = { day: null, night: null };   // loaded the first time a map is shown
+
+function loadMapImages() {
+  if (mapImages.day) return;
+  for (const [k, src] of [["day", DAY_IMAGE], ["night", NIGHT_IMAGE]]) {
+    const img = new Image();
+    img.onload = () => redrawMaps();
+    img.src = src;
+    mapImages[k] = img;
+  }
+}
+function ready(img) { return img && img.complete && img.naturalWidth > 0; }
+
+// ---- the sun (the same sums as osint's sun.py) --------------------------------------------
+function subsolarPoint(when) {
+  const rad = Math.PI / 180;
+  const n = when.getTime() / 86400000 + 2440587.5 - 2451545.0;
+  const meanLongitude = (280.460 + 0.9856474 * n) % 360;
+  const meanAnomaly = ((357.528 + 0.9856003 * n) % 360) * rad;
+  const ecliptic = (meanLongitude + 1.915 * Math.sin(meanAnomaly) + 0.020 * Math.sin(2 * meanAnomaly)) * rad;
+  const tilt = (23.439 - 0.0000004 * n) * rad;
+  const declination = Math.asin(Math.sin(tilt) * Math.sin(ecliptic));
+  const rightAscension = Math.atan2(Math.cos(tilt) * Math.sin(ecliptic), Math.cos(ecliptic)) / rad;
+  const sidereal = (280.46061837 + 360.98564736629 * n) % 360;
+  const lon = ((rightAscension - sidereal + 180) % 360 + 360) % 360 - 180;
+  return { lat: declination / rad, lon };
+}
+
+// A 360 x 180 picture of the night side (opaque = night), one pixel per degree. It's drawn
+// stretched over the night-lights image, which smooths the twilight edge for free.
+let nightMask = null, nightMaskSun = null;
+function getNightMask() {
+  const sun = subsolarPoint(new Date());
+  if (nightMask && Math.abs(sun.lon - nightMaskSun.lon) < 0.5 && Math.abs(sun.lat - nightMaskSun.lat) < 0.5) return nightMask;
+  const rad = Math.PI / 180;
+  const canvas = nightMask ?? Object.assign(document.createElement("canvas"), { width: 360, height: 180 });
+  const ctx = canvas.getContext("2d");
+  const data = ctx.createImageData(360, 180);
+  const top = Math.sin(TWILIGHT_TOP * rad), bottom = Math.sin(TWILIGHT_BOTTOM * rad);
+  const sunPhi = sun.lat * rad;
+  for (let row = 0; row < 180; row++) {
+    const phi = (90 - row - 0.5) * rad;
+    for (let col = 0; col < 360; col++) {
+      const lon = col + 0.5 - 180;
+      const height = Math.sin(phi) * Math.sin(sunPhi) + Math.cos(phi) * Math.cos(sunPhi) * Math.cos((lon - sun.lon) * rad);
+      let t = Math.min(1, Math.max(0, (height - bottom) / (top - bottom)));
+      t = t * t * (3 - 2 * t);                               // smoothstep, as osint
+      data.data[(row * 360 + col) * 4 + 3] = Math.round((1 - t) * 255);
+    }
+  }
+  ctx.putImageData(data, 0, 0);
+  nightMask = canvas; nightMaskSun = sun;
+  return canvas;
+}
+
+// ---- one map's view: {lat, lon, zoom} -------------------------------------------------------
+function pixelsPerDegree(zoom) { return WORLD_PIXELS_AT_ZOOM_1 * 2 ** (zoom - 1) / 360; }
+function clampZoom(z) { return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z)); }
+function wrapLon(lon) { return ((lon + 180) % 360 + 360) % 360 - 180; }
+
+function mapPoints(cfg) {                  // every place the map's feeds mark, except the sun
+  const points = [];
+  for (const key of cfg.feeds) {
+    const feed = GEO.feeds[key];
+    if (!feed || feed.format === "sun") continue;
+    for (const item of feed.items) {
+      if (item.lat != null && item.lon != null) points.push([item.lat, item.lon]);
+      for (const [, pts] of item.geometry) points.push(...pts);
+    }
+  }
+  return points;
+}
+
+// The view that shows every point (osint's fit_view): centred on them, zoomed in as far as
+// possible (at most FOLLOW_MAX_ZOOM) while they all fit with a margin.
+function fitView(points, width, height) {
+  const lats = points.map(p => p[0]);
+  const first = points[0][1];
+  const lons = points.map(p => first + wrapLon(p[1] - first));      // a group across the 180° line stays together
+  const lat = (Math.min(...lats) + Math.max(...lats)) / 2, lon = (Math.min(...lons) + Math.max(...lons)) / 2;
+  const needLon = (Math.max(...lons) - Math.min(...lons)) * (1 + 2 * FIT_MARGIN);
+  const needLat = (Math.max(...lats) - Math.min(...lats)) * (1 + 2 * FIT_MARGIN);
+  let zoom = FOLLOW_MAX_ZOOM;
+  while (zoom > MIN_ZOOM && !(width / pixelsPerDegree(zoom) >= needLon && height / pixelsPerDegree(zoom) >= needLat)) zoom--;
+  return { lat, lon: wrapLon(lon), zoom };
+}
+
+function homeView(cfg, width, height) {
+  if (cfg.center === "follow") {
+    const points = mapPoints(cfg);
+    if (points.length) return fitView(points, width, height);
+  }
+  if (cfg.center && typeof cfg.center === "object") return { lat: cfg.center.lat, lon: cfg.center.lon, zoom: cfg.zoom };
+  const here = GEO.location?.lat != null ? GEO.location : { lat: 0, lon: 0 };
+  return { lat: here.lat, lon: here.lon, zoom: cfg.zoom };
+}
+
+// ---- drawing --------------------------------------------------------------------------------
+const TRACK_COLOUR = "rgb(255,220,120)", CONE_FILL = "rgba(255,255,255,0.24)", CONE_EDGE = "rgba(255,255,255,0.67)";
+const MARKER_FILL = "rgb(230,40,40)", SUN_COLOUR = "rgb(255,210,60)";
+const ALERT_FILL = "rgba(255,140,0,0.22)", ALERT_EDGE = "rgba(255,140,0,0.85)";   // weather alert areas
+// Areas by feed format: [fill, edge, line width]; anything else (hurricane cones) is faint white.
+const AREA_STYLES = {
+  nws_alerts: [ALERT_FILL, ALERT_EDGE, 1.5],                                // weather alerts: orange
+  faa_tfr: ["rgba(230,40,40,0.20)", "rgba(255,80,80,0.9)", 1.5],            // flight restrictions: red
+  gpsjam: ["rgba(220,0,220,0.30)", "rgba(255,90,255,0.7)", 0.75],           // GPS jamming: magenta
+};
+// Marker colours by feed format, so the layers can be told apart; any feed's colour can be
+// changed per map in its popup (cfg.colours). Anything not listed: red.
+const FORMAT_COLOURS = {
+  usgs_quakes: "#ffd400",            // earthquakes: yellow
+  nhc_storms: "#e62828",             // hurricanes: red
+  iem_storm_reports: "#3a8dff",      // storm reports: blue
+  nws_alerts: "#ff8c00",             // weather alerts: orange
+  gdelt_events: "#b45cff",           // news by place: purple
+  faa_airport_status: "#2ecc71",     // airport status: green
+  ioda_outages: "#ff4fa3",           // internet outages: pink
+  faa_tfr: "#ff6060",                // flight restrictions: light red
+  celestrak_satellites: "#00dcff",   // satellites: cyan
+  gpsjam: "#dc00dc",                 // GPS jamming: magenta (its hexagons; see AREA_STYLES)
+  adsb_fi: "#ffffff",                // planes: white (military olive, flagged gold, unless the feed has its own colour)
+};
+const MARKER_SIZES = { celestrak_satellites: 3 };   // small dots for many small things; others MARKER_RADIUS
+const PLANE_FLAG_COLOURS = { military: "#9acd32", interesting: "#ffd700", pia: "#ffd700", ladd: "#ffd700" };
+
+function feedColour(map, key, format) {
+  return map.cfg.colours?.[key] ?? FORMAT_COLOURS[format] ?? MARKER_FILL;
+}
+
+// When the whole world fits across the map, there's one Earth: centred, not repeated, and it
+// can't be dragged sideways (drawMap pins the view's longitude to 0). Zoomed in further, the
+// map wraps round the 180° line as you pan, with only one copy on screen at a time.
+function worldFits(view, w) { return 360 * pixelsPerDegree(view.zoom) <= w; }
+
+// Draw an equirectangular world picture (360 x 180 degrees) for the view: once when the
+// world fits, otherwise as many times as it shows side by side; only the part on screen.
+function drawWorld(ctx, img, view, w, h) {
+  const ppd = pixelsPerDegree(view.zoom);
+  const worldW = 360 * ppd, worldH = 180 * ppd;
+  const iw = img.naturalWidth ?? img.width, ih = img.naturalHeight ?? img.height;
+  const y0 = h / 2 - (90 - view.lat) * ppd;
+  const top = Math.max(0, y0), bottom = Math.min(h, y0 + worldH);
+  if (bottom <= top) return;
+  let x0 = w / 2 + (-180 - view.lon) * ppd;
+  if (worldW <= w) w = Math.min(w, x0 + worldW);                // one Earth: stop after the first copy
+  else x0 -= Math.ceil(x0 / worldW) * worldW;                   // the copy starting at or left of 0
+  for (let x = x0; x < w; x += worldW) {
+    const left = Math.max(0, x), right = Math.min(w, x + worldW);
+    if (right <= left) continue;
+    const sx = (left - x) / worldW * iw, sw = (right - left) / worldW * iw;
+    const sy = (top - y0) / worldH * ih, sh = (bottom - top) / worldH * ih;
+    ctx.drawImage(img, sx, sy, sw, sh, left, top, right - left, bottom - top);
+  }
+}
+
+// Each map is four canvases stacked on top of each other, each redrawn only when what it
+// shows changes:
+//   picture  the NASA day image and the night side: on a pan, zoom or resize, or as the sun moves
+//   radar    pictures laid on the map (rain radar): also when a new one arrives
+//   markers  shapes, markers, planes and the sun symbol: also when new data arrives
+//   label    the hovered marker's label: also when the mouse moves to another marker
+// New data never touches the picture.
+function layerSize(map) { return { w: map.body.clientWidth, h: map.body.clientHeight }; }
+
+function prepare(canvas, w, h) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, dpr };
+}
+
+function drawMap(map) {                                       // everything: the view changed
+  const { w } = layerSize(map);
+  if (w && worldFits(map.view, w) && map.view.lon !== 0) map.view = { ...map.view, lon: 0 };   // one Earth, centred
+  drawPicture(map); drawRadar(map); drawMarkers(map); drawLabel(map);
+}
+
+// Pictures laid on the map (a feed whose item has `image` and `bounds` [south, west, north,
+// east], e.g. rain radar), loaded once per version; see-through where there's nothing.
+const RADAR_OPACITY = 0.75;
+const overlayImages = new Map();          // url -> Image
+function overlayImage(url) {
+  if (!overlayImages.has(url)) {
+    const img = new Image();
+    img.onload = () => { for (const m of mapsOnScreen) drawRadar(m); };
+    img.src = url;
+    overlayImages.set(url, img);
+    for (const old of overlayImages.keys()) if (old.split("?")[0] === url.split("?")[0] && old !== url) overlayImages.delete(old);   // the previous version
+  }
+  return overlayImages.get(url);
+}
+
+// The global rain layer: RainViewer's radar mosaic as web-map tiles (256 px, the web's
+// "Mercator" projection, where latitudes stretch toward the poles). Our maps are flat lat/lon,
+// so each tile is drawn in thin horizontal strips, each strip put at its own latitudes.
+// Only the tiles in view are loaded; while a new frame loads, the previous frame's tile stays.
+const RAIN_MAX_TILE_ZOOM = 7;             // finer tiles exist, but past this they only cost requests
+const MERCATOR_MAX_LAT = 85.0511;         // web-map tiles stop here
+const STRIPS = 8;                         // per tile: enough that the stretch can't be seen
+const rainImages = new Map();             // tile url -> Image
+let rainNow = null, rainBefore = null;    // the newest tile address, and the one before it
+
+function rainTiles() {
+  const feed = Object.values(GEO.feeds).find(f => f.format === "rainviewer");
+  return feed?.items[0]?.tiles ?? null;
+}
+
+let rainFrame = null;
+function rainSoon() {                     // tiles arrive one by one: redraw at most once a screen frame
+  if (rainFrame) return;
+  rainFrame = requestAnimationFrame(() => { rainFrame = null; for (const m of mapsOnScreen) if (m.cfg.rain) drawRadar(m); });
+}
+
+function rainTile(template, z, x, y) {
+  const url = template.replace("{z}", z).replace("{x}", x).replace("{y}", y);
+  if (!rainImages.has(url)) {
+    const img = new Image();
+    img.onload = rainSoon;
+    img.src = url;
+    rainImages.set(url, img);
+  }
+  return rainImages.get(url);
+}
+
+// Under the radar: osint's world pictures that fill the gaps where there's no radar (storm
+// clouds, satellite rainfall), feeds with a `rain` order, lowest first.
+function drawRainFill(ctx, map, w, h) {
+  const { near, toX, toY } = project(map);
+  const ppd = pixelsPerDegree(map.view.zoom);
+  const fills = Object.values(GEO.feeds).filter(f => f.rain).sort((a, b) => a.rain - b.rain);
+  ctx.globalAlpha = map.cfg.rainOpacity / 100;
+  for (const feed of fills) {
+    const item = feed.items[0];
+    if (!item?.image || !item.bounds) continue;
+    const img = overlayImage(item.image);
+    if (!ready(img)) continue;                                  // drawn when it has loaded
+    const [south, west, north, east] = item.bounds;
+    const width = (east - west) * ppd, x0 = toX(near(west));
+    const copies = worldFits(map.view, w) ? [x0] : [x0 - width, x0, x0 + width];   // one Earth, or the world repeating
+    for (const x of copies) {
+      if (x + width > 0 && x < w) ctx.drawImage(img, x, toY(north), width, (north - south) * ppd);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Rain hides past a zoom, per map: the satellite pictures turn blocky early (they're about
+// 20 km a pixel), radar much later, so planes and points stay clear when you zoom in.
+function drawRain(ctx, map, w, h) {
+  if (map.view.zoom <= map.cfg.rainSatelliteMaxZoom) drawRainFill(ctx, map, w, h);
+  const tiles = rainTiles();
+  if (!tiles || map.view.zoom > map.cfg.rainRadarMaxZoom) return;
+  if (tiles !== rainNow) {                                    // a new frame: keep the last one until its tiles load
+    rainBefore = rainNow; rainNow = tiles;
+    for (const url of rainImages.keys()) {
+      if (!(rainBefore && url.startsWith(rainBefore.split("{z}")[0])) && !url.startsWith(rainNow.split("{z}")[0])) rainImages.delete(url);
+    }
+  }
+  const view = map.view, ppd = pixelsPerDegree(view.zoom);
+  const z = Math.min(RAIN_MAX_TILE_ZOOM, Math.max(1, Math.round(view.zoom) + 1));   // about the map's own detail
+  const n = 2 ** z, rad = Math.PI / 180;
+  const tileY = lat => (1 - Math.log(Math.tan(lat * rad) + 1 / Math.cos(lat * rad)) / Math.PI) / 2 * n;
+  const latOf = y => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n))) / rad;
+  const toX = lon => w / 2 + (lon - view.lon) * ppd, toY = lat => h / 2 - (lat - view.lat) * ppd;
+  const lonLeft = view.lon - w / 2 / ppd, lonRight = view.lon + w / 2 / ppd;
+  const latTop = Math.min(MERCATOR_MAX_LAT, view.lat + h / 2 / ppd), latBottom = Math.max(-MERCATOR_MAX_LAT, view.lat - h / 2 / ppd);
+  if (latTop <= latBottom) return;
+  const yFirst = Math.max(0, Math.floor(tileY(latTop))), yLast = Math.min(n - 1, Math.floor(tileY(latBottom)));
+  let xFirst = Math.floor((lonLeft + 180) / 360 * n), xLast = Math.floor((lonRight + 180) / 360 * n);
+  if (worldFits(view, w)) { xFirst = Math.max(0, xFirst); xLast = Math.min(n - 1, xLast); }   // one Earth: no repeats
+  ctx.globalAlpha = map.cfg.rainOpacity / 100;
+  for (let x = xFirst; x <= xLast; x++) {
+    const left = toX(x / n * 360 - 180), width = 360 / n * ppd;     // x unwrapped: tiles repeat round the world
+    const tx = ((x % n) + n) % n;
+    for (let y = yFirst; y <= yLast; y++) {
+      let img = rainTile(rainNow, z, tx, y);
+      if (!ready(img) && rainBefore) img = rainImages.get(rainBefore.replace("{z}", z).replace("{x}", tx).replace("{y}", y));
+      if (!ready(img)) continue;
+      for (let s = 0; s < STRIPS; s++) {
+        const top = toY(latOf(y + s / STRIPS)), bottom = toY(latOf(y + (s + 1) / STRIPS));
+        ctx.drawImage(img, 0, s * 256 / STRIPS, 256, 256 / STRIPS, left, top, width, bottom - top);
+      }
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.font = "11px 'Segoe UI', system-ui, sans-serif";       // RainViewer's free use asks for a credit
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.textBaseline = "bottom";
+  ctx.fillText("Rain: RainViewer", 6, h - 4);
+}
+
+function drawRadar(map) {
+  const { w, h, near, toX, toY } = project(map);
+  if (!w || !h) return;
+  const { ctx } = prepare(map.layers.radar, w, h);
+  const ppd = pixelsPerDegree(map.view.zoom);
+  if (map.cfg.rain) drawRain(ctx, map, w, h);
+  ctx.globalAlpha = RADAR_OPACITY;
+  for (const key of map.cfg.feeds) {
+    for (const item of GEO.feeds[key]?.items ?? []) {
+      if (!item.image || !item.bounds) continue;
+      const img = overlayImage(item.image);
+      if (!ready(img)) continue;                                // drawn when it has loaded
+      const [south, west, north, east] = item.bounds;
+      const x = toX(near(west)), y = toY(north);
+      ctx.drawImage(img, x, y, (east - west) * ppd, (north - south) * ppd);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawPicture(map) {
+  const { w, h } = layerSize(map);
+  if (!w || !h) return;
+  const canvas = map.layers.picture;
+  const { ctx, dpr } = prepare(canvas, w, h);
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, w, h);
+  const view = map.view;
+  if (ready(mapImages.day)) drawWorld(ctx, mapImages.day, view, w, h);
+  if (ready(mapImages.night)) {                               // city lights on the night side
+    map.night ??= document.createElement("canvas");
+    const off = map.night;
+    if (off.width !== canvas.width || off.height !== canvas.height) { off.width = canvas.width; off.height = canvas.height; }
+    const o = off.getContext("2d");
+    o.setTransform(dpr, 0, 0, dpr, 0, 0);
+    o.globalCompositeOperation = "source-over";
+    o.clearRect(0, 0, w, h);
+    drawWorld(o, mapImages.night, view, w, h);
+    o.globalCompositeOperation = "destination-in";
+    o.imageSmoothingEnabled = true;
+    drawWorld(o, getNightMask(), view, w, h);
+    o.globalCompositeOperation = "source-over";
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(off, 0, 0);
+  }
+}
+
+function project(map) {
+  const { w, h } = layerSize(map);
+  const view = map.view, ppd = pixelsPerDegree(view.zoom);
+  const near = lon => view.lon + wrapLon(lon - view.lon);    // the copy of this longitude nearest the centre
+  return { w, h, near, toX: lon => w / 2 + (lon - view.lon) * ppd, toY: lat => h / 2 - (lat - view.lat) * ppd };
+}
+
+const MARKER_RADIUS = 5;
+
+function drawMarkers(map) {
+  const { w, h, near, toX, toY } = project(map);
+  if (!w || !h) return;
+  const { ctx } = prepare(map.layers.markers, w, h);
+  const cfg = map.cfg;
+  map.targets = [];
+  const items = cfg.feeds.flatMap(key => (GEO.feeds[key]?.items ?? []).map(item => ({ item, feed: GEO.feeds[key], key })));
+
+  // shapes: areas first, then tracks, then forecast points (as osint). Weather alert areas
+  // are orange, so a warning doesn't look like a hurricane cone (white).
+  const shapes = items.flatMap(({ item, feed, key }) => item.geometry.map(([kind, pts]) => [kind, pts, feed.format, key]));
+  const pixels = pts => {                                     // a shape stays together across the 180° line
+    const first = near(pts[0][1]);
+    return pts.map(([lat, lon]) => [toX(first + wrapLon(lon - first)), toY(lat)]);
+  };
+  for (const [kind, pts, format, key] of shapes) {
+    if (kind !== "polygon" || pts.length < 3) continue;
+    const own = cfg.colours?.[key];                            // a colour set for this feed in the map popup
+    const [fill, edge, width] = own ? [own + "38", own, 1.5] : AREA_STYLES[format] ?? [CONE_FILL, CONE_EDGE, 2];
+    ctx.beginPath(); pixels(pts).forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.closePath();
+    ctx.fillStyle = fill; ctx.fill();
+    ctx.strokeStyle = edge; ctx.lineWidth = width; ctx.stroke();
+  }
+  for (const [kind, pts] of shapes) {
+    if (kind !== "line" || pts.length < 2) continue;
+    const px = pixels(pts);
+    ctx.beginPath(); px.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+    ctx.strokeStyle = TRACK_COLOUR; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = TRACK_COLOUR;
+    for (const [x, y] of px.slice(0, -1)) { ctx.beginPath(); ctx.arc(x, y, 2, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  for (const [kind, pts] of shapes) {
+    if (kind !== "point") continue;
+    const [[x, y]] = pixels(pts);
+    ctx.beginPath(); ctx.arc(x, y, 3, 0, 2 * Math.PI); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();
+  }
+
+  // markers: a dot in the feed's colour with a white ring; a flight as a plane pointing where
+  // it's heading (red in an emergency, whatever its feed's colour); the sun as a sun.
+  for (const { item, feed, key } of items) {
+    if (feed.format === "sun") continue;
+    if (item.lat == null || item.lon == null) continue;
+    const x = toX(near(item.lon)), y = toY(item.lat);
+    if (x < -50 || x > w + 50 || y < -50 || y > h + 50) continue;
+    if (feed.format === "adsb_fi") {
+      const flag = (item.flags || "").split(" ").find(f => PLANE_FLAG_COLOURS[f]);
+      const colour = item.emergency ? MARKER_FILL
+                   : cfg.colours?.[key] ?? (flag ? PLANE_FLAG_COLOURS[flag] : FORMAT_COLOURS.adsb_fi);
+      drawPlane(ctx, x, y, item.heading ?? 0, colour);
+    }
+    else if (feed.format === "gpsjam") { /* the hexagon is the marker; hover still finds its centre */ }
+    else {
+      const colour = feedColour(map, key, feed.format), r = MARKER_SIZES[feed.format] ?? MARKER_RADIUS;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI);
+      ctx.fillStyle = colour; ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = r > 3 ? 2 : 1; ctx.stroke();
+    }
+    map.targets.push({ x, y, item, id: key + "|" + (item.id ?? item.title) });
+  }
+  if (cfg.feeds.some(key => GEO.feeds[key]?.format === "sun")) {
+    const sun = subsolarPoint(new Date());
+    drawSun(ctx, toX(near(sun.lon)), toY(sun.lat), 8);
+  }
+}
+
+// The hovered marker's label, found again by its id after new data (a plane keeps its id
+// while its title changes with its altitude). The label stays inside the map.
+function drawLabel(map) {
+  const { w, h } = layerSize(map);
+  if (!w || !h) return;
+  const { ctx } = prepare(map.layers.label, w, h);
+  const hovered = map.targets?.find(t => t.id === map.hovered);
+  if (!hovered?.item.title) return;
+  const { x, y, item } = hovered;
+  ctx.font = "13px 'Segoe UI', system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  const textX = Math.min(x + MARKER_RADIUS * 2, w - ctx.measureText(item.title).width - 4);
+  ctx.lineWidth = 3; ctx.strokeStyle = "#000"; ctx.strokeText(item.title, textX, y);
+  ctx.fillStyle = "#fff"; ctx.fillText(item.title, textX, y);
+}
+
+// A small plane seen from above, nose pointing `heading` degrees (0 = north, clockwise).
+const PLANE = [[0, -9], [1.5, -6], [1.5, -2], [9, 2], [9, 3.5], [1.5, 1.5], [1.2, 6], [3.5, 8], [3.5, 9],
+               [0, 8], [-3.5, 9], [-3.5, 8], [-1.2, 6], [-1.5, 1.5], [-9, 3.5], [-9, 2], [-1.5, -2], [-1.5, -6]];
+function drawPlane(ctx, x, y, heading, colour) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(heading * Math.PI / 180);
+  ctx.beginPath(); PLANE.forEach(([px, py], i) => i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)); ctx.closePath();
+  ctx.fillStyle = colour; ctx.fill();
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
+}
+
+function drawSun(ctx, x, y, r) {
+  ctx.strokeStyle = SUN_COLOUR; ctx.lineWidth = 2;
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4;
+    ctx.beginPath(); ctx.moveTo(x + Math.cos(a) * r * 1.3, y + Math.sin(a) * r * 1.3);
+    ctx.lineTo(x + Math.cos(a) * r * 2, y + Math.sin(a) * r * 2); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI);
+  ctx.fillStyle = SUN_COLOUR; ctx.fill(); ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+let mapsOnScreen = [];       // [{el, body, layers, cfg, index, view, targets, hovered, ...}]
+function redrawMaps() { for (const m of mapsOnScreen) drawMap(m); }
+
+// At most one redraw per screen frame, of the layers asked for since the last one.
+function scheduleDraw(m, what = "all") {
+  m.due = m.due === "all" || what === "all" ? "all" : "label";
+  if (m.frame) return;
+  m.frame = requestAnimationFrame(() => {
+    const due = m.due;
+    m.frame = null; m.due = null;
+    if (due === "all") drawMap(m); else drawLabel(m);
+  });
+}
+
+// ---- new data, and holding it while you're using a map -----------------------------------------
+// While you drag, zoom (the wheel) or have a popup open, new data waits; it's put on the map
+// when you stop. So nothing jumps under the mouse.
+function busy(map) { return !!(map.dragging || map.wheeling || popupOpen()); }
+
+function geoChanged() {
+  for (const m of mapsOnScreen) {
+    m.el.querySelector(".map-bar span").textContent = m.cfg.feeds.map(k => GEO.feeds[k]?.name ?? k).join(", ") || "Map (no feeds)";
+    if (busy(m)) m.waiting = true;
+    else applyData(m);
+  }
+}
+
+// `refit` false: data that waited while you dragged or zoomed updates the markers but leaves
+// your view alone (follow re-fits on the next new data, as before).
+function applyData(map, refit = true) {
+  map.waiting = false;
+  if (refit && map.cfg.center === "follow") {                 // follow may move the view: then the picture too
+    const { w, h } = layerSize(map);
+    const v = homeView(map.cfg, w, h);
+    if (v.lat !== map.view.lat || v.lon !== map.view.lon || v.zoom !== map.view.zoom) { map.view = v; drawMap(map); return; }
+  }
+  drawRadar(map);
+  drawMarkers(map);
+  drawLabel(map);
+}
+
+function applyWaitingData(refit = true) {
+  for (const m of mapsOnScreen) if (m.waiting && !busy(m)) applyData(m, refit);
+}
+
+// ---- where maps go, and how much room the rows keep -------------------------------------------
+// Docked maps take a strip along their side (size = % of the window's width or height); maps
+// docked to the same side sit next to each other, the first against the edge. A docked map
+// that pushes makes the rows narrower (or shorter); one that covers sits over them.
+// Floating maps sit where they were dragged.
+function layoutPage() {
+  const gap = cssPx("--gap");
+  const W = innerWidth, H = innerHeight;
+  const along = { left: gap, right: gap, top: gap, bottom: gap };   // how far in the next map on each side starts
+  const rows = { left: gap, right: gap, top: gap, bottom: gap };    // where the rows area starts on each side
+  const rects = layout().maps.map(cfg => {
+    if (cfg.placement === "floating") {
+      const w = Math.min(cfg.w, W), h = Math.min(cfg.h, H);
+      return { left: Math.min(Math.max(0, cfg.x), W - w), top: Math.min(Math.max(0, cfg.y), H - h), width: w, height: h };
+    }
+    const side = cfg.side, horizontal = side === "left" || side === "right";
+    const size = Math.round((horizontal ? W : H) * cfg.size / 100);
+    let r;
+    if (side === "left") r = { left: along.left, top: gap, width: size, height: H - 2 * gap };
+    if (side === "right") r = { left: W - along.right - size, top: gap, width: size, height: H - 2 * gap };
+    if (side === "top") r = { left: gap, top: along.top, width: W - 2 * gap, height: size };
+    if (side === "bottom") r = { left: gap, top: H - along.bottom - size, width: W - 2 * gap, height: size };
+    along[side] += size + gap;
+    if (cfg.push) rows[side] = Math.max(rows[side], along[side]);
+    return r;
+  });
+  Object.assign(screen.style, { left: rows.left + "px", right: rows.right + "px", top: rows.top + "px", bottom: rows.bottom + "px" });
+  return rects;
+}
+
+function renderMaps(rects) {
+  for (const m of mapsOnScreen) m.el.remove();
+  mapsOnScreen = [];
+  const maps = layout().maps;
+  if (!maps.length) return;
+  loadMapImages();
+  maps.forEach((cfg, index) => {
+    const r = rects[index];
+    const el = document.createElement("div");
+    el.className = "map " + cfg.placement;
+    Object.assign(el.style, { left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    const bar = document.createElement("div");
+    bar.className = "map-bar";
+    const title = document.createElement("span");
+    title.textContent = cfg.feeds.map(k => GEO.feeds[k]?.name ?? k).join(", ") || "Map (no feeds)";
+    const gearButton = document.createElement("button");
+    gearButton.className = "map-gear";
+    gearButton.innerHTML = "&#9881;";
+    gearButton.title = "Map settings";
+    bar.append(title, gearButton);
+    const body = document.createElement("div");                  // the four layers, bottom to top
+    body.className = "map-body";
+    const layers = { picture: document.createElement("canvas"), radar: document.createElement("canvas"),
+                     markers: document.createElement("canvas"), label: document.createElement("canvas") };
+    body.append(layers.picture, layers.radar, layers.markers, layers.label);
+    el.append(bar, body);
+    document.body.appendChild(el);
+    const map = { el, body, layers, cfg, index, view: null, targets: [], hovered: null };
+    map.view = homeView(cfg, body.clientWidth, body.clientHeight);
+    gearButton.addEventListener("click", e => { e.stopPropagation(); openMapPopup(index, gearButton); });
+    if (cfg.placement === "floating") {
+      const grip = document.createElement("div");
+      grip.className = "map-grip";
+      el.appendChild(grip);
+      dragToChange(bar, map, "move");
+      dragToChange(grip, map, "size");
+    }
+    panAndZoom(map);
+    mapsOnScreen.push(map);
+    drawMap(map);
+  });
+}
+
+// ---- dragging a map's view, the wheel, hover and click ---------------------------------------
+// In follow mode a pan or zoom lasts until the next data; otherwise it's saved as the map's
+// centre and zoom.
+function panAndZoom(map) {
+  const { body } = map;
+  let start = null;
+  body.addEventListener("pointerdown", e => {
+    start = { x: e.clientX, y: e.clientY, lat: map.view.lat, lon: map.view.lon, moved: false };
+    try { body.setPointerCapture(e.pointerId); } catch { /* no such pointer: drag still works inside the map */ }
+  });
+  body.addEventListener("pointermove", e => {
+    if (start) {
+      const dx = e.clientX - start.x, dy = e.clientY - start.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) start.moved = true;
+      if (!start.moved) return;
+      map.dragging = true;
+      const ppd = pixelsPerDegree(map.view.zoom);
+      map.view = { ...map.view, lon: wrapLon(start.lon - dx / ppd), lat: Math.max(-90, Math.min(90, start.lat + dy / ppd)) };
+      scheduleDraw(map);
+      return;
+    }
+    const hit = hitTest(map, e);                          // hover: the marker's label, a hand if it has a link
+    const id = hit?.id ?? null;
+    if (id !== map.hovered) { map.hovered = id; scheduleDraw(map, "label"); }
+    body.title = hit ? [hit.item.title, hit.item.details].filter(Boolean).join("\n") : "";   // tooltip: title, then its details
+    body.style.cursor = hit?.item.url ? "pointer" : "grab";
+  });
+  body.addEventListener("pointerup", e => {
+    if (!start) return;
+    const moved = start.moved;
+    start = null; map.dragging = false;
+    if (moved) { keepView(map); applyWaitingData(false); return; }   // your view stays where you dragged it
+    const hit = hitTest(map, e);
+    if (hit?.item.url) window.open(hit.item.url, "_blank", "noopener");
+  });
+  body.addEventListener("pointerleave", () => { if (map.hovered) { map.hovered = null; scheduleDraw(map, "label"); } });
+  body.addEventListener("wheel", e => {
+    e.preventDefault();
+    const rect = body.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const v = map.view, ppd = pixelsPerDegree(v.zoom);
+    const lon = v.lon + (mx - rect.width / 2) / ppd, lat = v.lat - (my - rect.height / 2) / ppd;   // the spot under the mouse stays put
+    const zoom = clampZoom(v.zoom + (e.deltaY < 0 ? 0.25 : -0.25));
+    const ppd2 = pixelsPerDegree(zoom);
+    map.view = { zoom, lon: wrapLon(lon - (mx - rect.width / 2) / ppd2), lat: Math.max(-90, Math.min(90, lat + (my - rect.height / 2) / ppd2)) };
+    map.wheeling = true;
+    scheduleDraw(map);
+    clearTimeout(map.wheelTimer);
+    map.wheelTimer = setTimeout(() => { map.wheeling = false; keepView(map); applyWaitingData(false); }, 400);   // and where you zoomed
+  }, { passive: false });
+}
+
+function hitTest(map, e) {
+  const rect = map.body.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  let best = null, bestD = 8 * 8;
+  for (const t of map.targets ?? []) {
+    const d = (t.x - x) ** 2 + (t.y - y) ** 2;
+    if (d <= bestD) { best = t; bestD = d; }
+  }
+  return best;
+}
+
+function keepView(map) {
+  if (map.cfg.center === "follow") return;
+  const v = map.view;
+  quietly(l => {
+    const m = l.maps[map.index];
+    if (!m) return;
+    m.center = { lat: Math.round(v.lat * 1000) / 1000, lon: Math.round(v.lon * 1000) / 1000 };
+    m.zoom = v.zoom;
+  });
+  map.cfg = layout().maps[map.index];
+}
+
+// Floating maps: drag the bar to move, the corner grip to resize.
+function dragToChange(handle, map, what) {
+  handle.addEventListener("pointerdown", e => {
+    if (e.target.closest(".map-gear")) return;
+    e.preventDefault();
+    const r = map.el.getBoundingClientRect();
+    const start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, width: r.width, height: r.height };
+    try { handle.setPointerCapture(e.pointerId); } catch { /* no such pointer: drag still works over the handle */ }
+    const move = ev => {
+      const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+      if (what === "move") Object.assign(map.el.style, { left: Math.max(0, start.left + dx) + "px", top: Math.max(0, start.top + dy) + "px" });
+      else {
+        Object.assign(map.el.style, { width: Math.max(200, start.width + dx) + "px", height: Math.max(120, start.height + dy) + "px" });
+        scheduleDraw(map);                                   // all layers: the size changed
+      }
+    };
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      const r2 = map.el.getBoundingClientRect();
+      quietly(l => { Object.assign(l.maps[map.index], { x: Math.round(r2.left), y: Math.round(r2.top), w: Math.round(r2.width), h: Math.round(r2.height) }); });
+      map.cfg = layout().maps[map.index];
+      drawMap(map);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+}
+
+// ---- the map popup -----------------------------------------------------------------------------
+function openMapPopup(index, anchor) {
+  const cfg = layout().maps[index];
+  if (!cfg) return;
+  const again = () => { const gear = mapsOnScreen[index]?.el.querySelector(".map-gear"); if (gear) openMapPopup(index, gear); else closePopup(); };
+  const edit = fn => { change(l => fn(l.maps[index])); again(); };
+  const choice = (current, options, set) => options.map(([value, text]) =>
+    el("button", { class: current === value ? "on" : "", textContent: text, onclick: () => edit(m => set(m, value)) }));
+  const feedKeys = Object.keys(GEO.feeds).filter(k => GEO.feeds[k].format !== "rainviewer" && !GEO.feeds[k].rain);   // the rain layer has its own switch
+  const center = cfg.center === "follow" ? "follow" : cfg.center && typeof cfg.center === "object" ? "here" : "location";
+  const live = mapsOnScreen[index];
+  const docked = cfg.placement === "docked";
+  showPopup(anchor, [
+    el("h3", { textContent: "Map" }),
+    el("div", { class: "line" }, el("label", { textContent: "Feeds" })),
+    el("div", { class: "picker" }, ...feedKeys.map(k => {
+      const f = GEO.feeds[k];
+      const box = el("input", { type: "checkbox", checked: cfg.feeds.includes(k),
+        onchange: e => edit(m => { m.feeds = e.target.checked ? [...m.feeds, k] : m.feeds.filter(x => x !== k); }) });
+      const none = f.format !== "sun" && !f.items.length;
+      const colour = f.format === "sun" ? null : el("input", {                // the feed's colour on this map: the legend too
+        type: "color", className: "swatch", value: feedColour({ cfg }, k, f.format), title: "This feed's colour on this map",
+        onchange: e => edit(m => { m.colours = { ...(m.colours || {}), [k]: e.target.value }; }) });
+      return el("div", { class: none ? "dim" : "", title: f.failed ?? "" },
+                el("label", {}, box, colour, " " + f.name + (f.failed ? " (failing)" : none ? " (none now)" : "")));
+    })),
+    el("div", { class: "line" }, el("label", { textContent: "Rain" }),
+       ...choice(cfg.rain, [[true, "On"], [false, "Off"]], (m, v) => { m.rain = v; }),
+       el("input", { type: "number", min: 10, max: 100, step: 5, value: cfg.rainOpacity, title: "How see-through the rain is",
+         onchange: e => { const o = Number(e.target.value); if (o >= 10 && o <= 100) edit(m => { m.rainOpacity = o; }); } }),
+       el("span", { class: "note", textContent: rainTiles() ? "% opaque" : "% opaque (no rain data yet)" })),
+    el("div", { class: "line" }, el("label", { textContent: "Rain up to zoom" }),
+       el("span", { class: "note", textContent: "satellite" }),
+       el("input", { type: "number", min: MIN_ZOOM, max: MAX_ZOOM, step: 0.5, value: cfg.rainSatelliteMaxZoom,
+         title: "Past this zoom the satellite rain and clouds are hidden (they turn blocky)",
+         onchange: e => { const z = Number(e.target.value); if (z >= MIN_ZOOM && z <= MAX_ZOOM) edit(m => { m.rainSatelliteMaxZoom = z; }); } }),
+       el("span", { class: "note", textContent: "radar" }),
+       el("input", { type: "number", min: MIN_ZOOM, max: MAX_ZOOM, step: 0.5, value: cfg.rainRadarMaxZoom,
+         title: "Past this zoom the radar rain is hidden",
+         onchange: e => { const z = Number(e.target.value); if (z >= MIN_ZOOM && z <= MAX_ZOOM) edit(m => { m.rainRadarMaxZoom = z; }); } })),
+    el("div", { class: "line" }, el("label", { textContent: "Center" }),
+       ...choice(center, [["location", "Location"], ["follow", "Follow"]], (m, v) => { m.center = v === "location" ? null : "follow"; }),
+       el("button", { class: center === "here" ? "on" : "", textContent: "This view",
+         title: "Keep the map where it is now", onclick: () => edit(m => {
+           const v = live?.view; if (!v) return;
+           m.center = { lat: Math.round(v.lat * 1000) / 1000, lon: Math.round(v.lon * 1000) / 1000 }; m.zoom = v.zoom; }) })),
+    el("div", { class: "line" }, el("label", { textContent: "Zoom" }),
+       el("input", { type: "number", min: MIN_ZOOM, max: MAX_ZOOM, step: 0.25, value: cfg.zoom,
+         onchange: e => { const z = Number(e.target.value); if (z >= MIN_ZOOM && z <= MAX_ZOOM) edit(m => { m.zoom = z; }); } }),
+       el("span", { class: "note", textContent: cfg.center === "follow" ? "used when there's nothing to follow" : "1 = whole world, 8 = a county (the picture blurs past 5)" })),
+    el("div", { class: "line" }, el("label", { textContent: "Placement" }),
+       ...choice(cfg.placement, [["docked", "Docked"], ["floating", "Floating"]], (m, v) => {
+         if (v === "floating" && live) { const r = live.el.getBoundingClientRect();
+           Object.assign(m, { x: Math.round(r.left + 30), y: Math.round(r.top + 30), w: Math.round(Math.min(r.width, 700)), h: Math.round(Math.min(r.height, 450)) }); }
+         m.placement = v; })),
+    docked ? el("div", { class: "line" }, el("label", { textContent: "Side" }),
+       ...choice(cfg.side, [["left", "Left"], ["right", "Right"], ["top", "Top"], ["bottom", "Bottom"]], (m, v) => { m.side = v; })) : null,
+    docked ? el("div", { class: "line" }, el("label", { textContent: "Size" }),
+       el("input", { type: "number", min: 10, max: 90, step: 1, value: cfg.size,
+         onchange: e => { const s = Number(e.target.value); if (s >= 10 && s <= 90) edit(m => { m.size = s; }); } }),
+       el("span", { class: "note", textContent: "% of the window" })) : null,
+    docked ? el("div", { class: "line" }, el("label", { textContent: "Rows" }),
+       ...choice(cfg.push, [[true, "Make room"], [false, "Cover them"]], (m, v) => { m.push = v; })) : null,
+    docked ? null : el("div", { class: "note", textContent: "Drag the bar to move it, the corner to resize it." }),
+    el("div", { class: "line" },
+       el("button", { class: "danger", textContent: "Delete map", onclick: () => { change(l => { l.maps.splice(index, 1); }); closePopup(); } })),
+  ]);
+}
+
+function addMap() {
+  const feeds = Object.keys(GEO.feeds);
+  change(l => { l.maps.push(newMap(feeds)); });
+  const gear = mapsOnScreen.at(-1)?.el.querySelector(".map-gear");
+  if (gear) openMapPopup(mapsOnScreen.length - 1, gear);
+}
+
+function newMap(feeds) {
+  return { feeds, center: null, zoom: 1, placement: "docked", side: "right", size: 35, push: true,
+           x: 100, y: 100, w: 600, h: 380, rain: false, rainOpacity: 70,
+           rainSatelliteMaxZoom: 4, rainRadarMaxZoom: 8,     // rain hides past these zooms
+           colours: {} };                                     // feed key -> "#rrggbb", overriding FORMAT_COLOURS
+}
+
+function normaliseMap(m) {
+  const n = newMap([]);
+  if (!m || typeof m !== "object") return null;
+  n.feeds = Array.isArray(m.feeds) ? m.feeds.filter(f => typeof f === "string") : [];
+  n.center = m.center === "follow" ? "follow"
+           : m.center && typeof m.center === "object" && isFinite(m.center.lat) && isFinite(m.center.lon) ? { lat: +m.center.lat, lon: +m.center.lon } : null;
+  n.zoom = isFinite(m.zoom) ? clampZoom(+m.zoom) : 1;
+  n.placement = m.placement === "floating" ? "floating" : "docked";
+  n.side = ["left", "right", "top", "bottom"].includes(m.side) ? m.side : "right";
+  n.size = isFinite(m.size) ? Math.min(90, Math.max(10, +m.size)) : 35;
+  n.push = m.push !== false;
+  n.rain = m.rain === true;
+  n.rainOpacity = isFinite(m.rainOpacity) ? Math.min(100, Math.max(10, +m.rainOpacity)) : 70;
+  for (const k of ["rainSatelliteMaxZoom", "rainRadarMaxZoom"]) if (isFinite(m[k])) n[k] = clampZoom(+m[k]);
+  if (m.colours && typeof m.colours === "object") {
+    n.colours = Object.fromEntries(Object.entries(m.colours).filter(([, c]) => /^#[0-9a-f]{6}$/i.test(c)));
+  }
+  for (const k of ["x", "y", "w", "h"]) if (isFinite(m[k])) n[k] = +m[k];
+  n.w = Math.max(200, n.w); n.h = Math.max(120, n.h);
+  return n;
+}
+
+// =============================================================================
+// Popups
+// =============================================================================
+const popup = document.getElementById("popup");
+function popupOpen() { return popup.style.display === "block"; }
+function closePopup() {
+  popup.style.display = "none"; popup.replaceChildren();
+  applyWaitingData();                                        // data that arrived while it was open
+}
+
+function el(tag, props = {}, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (k === "class") e.className = v;
+    else e[k] = v;
+  }
+  for (const c of children) if (c != null) e.append(c);
+  return e;
+}
+
+function showPopup(anchor, children) {
+  popup.replaceChildren(...children.filter(c => c != null));   // left-out lines are null: skip them, don't print "null"
+  popup.style.display = "block";
+  const a = anchor.getBoundingClientRect();
+  const w = popup.offsetWidth, h = popup.offsetHeight;
+  let left = Math.min(a.left, innerWidth - w - 8), top = a.bottom + 4;
+  if (top + h > innerHeight - 8) top = Math.max(8, a.top - h - 4);
+  popup.style.left = Math.max(8, left) + "px";
+  popup.style.top = top + "px";
+}
+
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePopup(); });
+document.addEventListener("mousedown", e => {
+  if (popupOpen() && !popup.contains(e.target) && !e.target.closest("#gear, .badge, .map-gear")) closePopup();
+});
+
+function speedInput(value, placeholder, onChange) {
+  return el("input", { type: "number", min: 1, step: 1, value: value ?? "", placeholder,
+                       onchange: e => onChange(e.target.value === "" ? null : Number(e.target.value)) });
+}
+
+function feedPicker(current, choose) {
+  const search = el("input", { type: "search", placeholder: "Search feeds..." });
+  const list = el("div", { class: "picker" });
+  const keys = Object.keys(NEWS_FEEDS);
+  function fill() {
+    const q = search.value.trim().toLowerCase();
+    list.replaceChildren(...keys
+      .filter(k => !q || k.toLowerCase().includes(q) || feedName(k).toLowerCase().includes(q))
+      .map(k => {
+        const dim = !stories(k).length;
+        return el("div", { class: (k === current ? "current " : "") + (dim ? "dim" : ""),
+                           textContent: feedName(k) + (dim ? " (no stories)" : ""),
+                           title: NEWS_FEEDS[k].failed ?? feedName(k),
+                           onclick: () => choose(k) });
+      }));
+  }
+  search.addEventListener("input", fill);
+  fill();
+  setTimeout(() => list.querySelector(".current")?.scrollIntoView({ block: "center" }), 0);
+  return [search, list];
+}
+
+function openRowPopup(index, anchor) {
+  const cfg = layout().rows[index];
+  if (!cfg) return;
+  const again = () => { const badge = allRows().find(r => r.index === index)?.querySelector(".badge"); if (badge) openRowPopup(index, badge); else closePopup(); };
+  const edit = fn => { change(l => fn(l.rows[index], l)); again(); };
+  const speeds = layout().speeds;
+  const modeButton = (mode, text) => el("button", { class: cfg.mode === mode ? "on" : "", textContent: text,
+                                                    onclick: () => edit(r => { r.mode = mode; }) });
+  const isCrawl = cfg.mode === "crawl";
+  showPopup(anchor, [
+    el("h3", { textContent: feedName(cfg.feed) }),
+    el("div", { class: "line" }, el("label", { textContent: "Marquee" }), modeButton("static", "Static"), modeButton("crawl", "Crawl")),
+    el("div", { class: "line" }, el("label", { textContent: "Pinned" }),
+       el("button", { class: cfg.pinned ? "on" : "", textContent: cfg.pinned ? "Pinned" : "Not pinned",
+                      onclick: () => pinAndFollow(index) })),
+    el("div", { class: "line" }, el("label", { textContent: isCrawl ? "Crawl speed" : "Seconds each" }),
+       isCrawl
+         ? speedInput(cfg.crawlPixelsPerSecond, `${speeds.crawlPixelsPerSecond} (all)`, v => edit(r => { r.crawlPixelsPerSecond = v; }))
+         : speedInput(cfg.staticSeconds, `${speeds.staticSeconds} (all)`, v => edit(r => { r.staticSeconds = v; })),
+       el("span", { class: "note", textContent: isCrawl ? "px/s, empty = the page's" : "empty = the page's" })),
+    el("div", { class: "line" }, el("label", { textContent: "Move" }),
+       el("button", { textContent: "↑ Up", onclick: () => moveAndFollow(index, -1) }),
+       el("button", { textContent: "↓ Down", onclick: () => moveAndFollow(index, +1) })),
+    el("div", { class: "line" }, el("label", { textContent: "Feed" })),
+    ...feedPicker(cfg.feed, key => edit(r => { r.feed = key; })),
+    el("div", { class: "line" },
+       el("button", { class: "danger", textContent: "Delete row",
+                      onclick: () => { change(l => { l.rows.splice(index, 1); }); closePopup(); } })),
+  ]);
+}
+
+// Move / pin a row, then reopen its popup where the row is now (its list index may change).
+function moveAndFollow(index, dir) { editAndFollow(index, (l, keep) => moveRow(l, keep, index, dir)); }
+function pinAndFollow(index) { editAndFollow(index, (l, keep) => togglePin(l, keep, index)); }
+function editAndFollow(index, edit) {
+  let now;
+  change((l, keep) => { const row = l.rows[index]; edit(l, keep); now = l.rows.indexOf(row); });
+  const badge = allRows().find(r => r.index === now)?.querySelector(".badge");
+  if (badge) openRowPopup(now, badge); else closePopup();
+}
+
+function openPagePopup() {
+  const gear = document.getElementById("gear");
+  const speeds = layout().speeds;
+  const speed = (label, key, note, step = 1) => el("div", { class: "line" }, el("label", { textContent: label }),
+    el("input", { type: "number", min: step, step, value: speeds[key],
+                  onchange: e => { const v = positive(Number(e.target.value)); if (v) change(l => { l.speeds[key] = v; }); } }),
+    el("span", { class: "note", textContent: note }));
+  const importer = el("input", { type: "file", accept: ".json,application/json", style: "display:none",
+                                 onchange: e => importLayout(e.target.files[0]) });
+  showPopup(gear, [
+    el("h3", { textContent: "Page settings" }),
+    speed("Seconds each", "staticSeconds", "static rows"),
+    speed("Slide time", "slideSeconds", "seconds to slide to the next", 0.1),
+    speed("Crawl speed", "crawlPixelsPerSecond", "px/s"),
+    speed("Roll every", "rollSeconds", "seconds"),
+    el("div", { class: "line" }, el("label", { textContent: "Badge width" }),
+       el("input", { type: "number", min: 20, step: 1, value: layout().look.badgeWidth,
+                     onchange: e => { const v = positive(Number(e.target.value)); if (v) change(l => { l.look.badgeWidth = v; }); } }),
+       el("span", { class: "note", textContent: "px, icons and names" })),
+    el("div", { class: "line" }, el("label", { textContent: "Icon background" }),
+       ...Object.keys(ICON_BACKGROUNDS).map(k => el("button", {
+         class: layout().look.iconBackground === k ? "on" : "", textContent: k[0].toUpperCase() + k.slice(1),
+         onclick: () => { change(l => { l.look.iconBackground = k; }); openPagePopup(); } }))),
+    el("div", { class: "line" }, el("button", { textContent: "Add row", onclick: addRow }),
+       el("button", { textContent: "Add map", onclick: addMap })),
+    el("div", { class: "line" },
+       el("button", { textContent: "Export layout", onclick: exportLayout }),
+       el("button", { textContent: "Import layout", onclick: () => importer.click() }), importer),
+    el("div", { class: "line" },
+       el("button", { class: "danger", textContent: "Reset to default",
+                      onclick: () => { if (confirm("Forget this browser's layout and go back to the default?")) resetLayout(); } })),
+    el("div", { class: "note", textContent: saved ? `${saved.rows.length} rows, kept in this browser.`
+                                                  : "Default layout (nothing changed yet)." }),
+  ]);
+}
+document.getElementById("gear").addEventListener("click", e => { e.stopPropagation(); popupOpen() ? closePopup() : openPagePopup(); });
+
+// A new row goes at the end of the rolling rows, with the first feed that has stories and
+// isn't shown yet; its popup opens so the feed can be changed.
+function addRow() {
+  const used = new Set(layout().rows.map(r => r.feed));
+  const keys = Object.keys(NEWS_FEEDS);
+  const feed = keys.find(k => !used.has(k) && stories(k).length) ?? keys[0];
+  if (!feed) return;
+  change((l, keep) => {
+    l.rows.push({ feed, mode: "static", pinned: false, slot: null, staticSeconds: null, crawlPixelsPerSecond: null });
+    const { free, rolling } = arrange(l.rows, lines);                       // roll it into view, on the last free line
+    if (rolling.length > free.length) keep.top = l.rows[rolling[rolling.length - free.length]];
+  });
+  const index = layout().rows.length - 1;
+  const badge = allRows().find(r => r.index === index)?.querySelector(".badge");
+  openRowPopup(index, badge ?? document.getElementById("gear"));
+}
+
+function exportLayout() {
+  const blob = new Blob([JSON.stringify(layout(), null, 2)], { type: "application/json" });
+  const a = el("a", { href: URL.createObjectURL(blob), download: "osint-web-layout.json" });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function importLayout(file) {
+  if (!file) return;
+  file.text().then(text => {
+    let layout;
+    try { layout = normalise(JSON.parse(text)); } catch { alert("That file isn't a layout (not JSON)."); return; }
+    if (!layout.rows.length) { alert("That file has no rows."); return; }
+    change(l => { l.speeds = layout.speeds; l.look = layout.look; l.rows = layout.rows; l.maps = layout.maps; });
+    closePopup();
+  });
+}
+
+function resetLayout() {
+  try { localStorage.removeItem(STORE_KEY); } catch {}
+  saved = null;
+  topRolling = 0;
+  closePopup();
+  render();
+}
+
+// =============================================================================
+// Start, and keep up to date
+// =============================================================================
+function showMessage(html) {
+  let m = document.getElementById("message");
+  if (!html) { m?.remove(); return; }
+  if (!m) { m = document.createElement("div"); m.id = "message"; screen.prepend(m); }
+  m.innerHTML = html;
+}
+
+let firstLoad = true;
+async function refresh() {
+  const news = await loadNews();
+  if (!news) {
+    showMessage("No <code>news.js</code> next to this page yet. In osint's config.yml set " +
+                "<code>web: news_file:</code> to this folder's <code>news.js</code> and start osint.");
+    return;
+  }
+  const defaultBefore = JSON.stringify(defaultLayout().rows);
+  NEWS_FEEDS = news.feeds;
+  showMessage(Object.values(NEWS_FEEDS).some(f => f.stories.length) ? "" : "osint hasn't fetched any feeds yet.");
+  const geo = await loadScript("geo.js", "GEO");   // small; read even with no maps, so Add map knows the feeds
+  const geoNew = geo && geo.updated !== geoUpdated;
+  if (geo) { GEO = geo; geoUpdated = geo.updated; }
+  if (firstLoad) { firstLoad = false; render(); }
+  else {
+    refreshRows(defaultBefore);
+    if (geoNew) geoChanged();
+  }
+}
+
+saved = loadSaved();          // here, once every constant above exists
+refresh();
+setInterval(refresh, RELOAD_SECONDS * 1000);
+setInterval(redrawMaps, SUN_REDRAW_SECONDS * 1000);      // the night side moves
+
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    renderMaps(layoutPage());                          // docked sizes are % of the window
+    if (linesThatFit() !== lines) renderRows();
+  }, 150);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,192 @@
+# watchtower settings. Copy to config.yml and change what you need: anything left out
+# takes the default shown here. CONFIG.md explains every setting.
+# A default feed can be turned off with `name: null` under feed_catalog.
+
+location:
+  lat: 25.76
+  lon: -80.19
+skip_keywords: []
+web:
+  folder: web
+server:
+  host: 127.0.0.1
+  port: 8765
+pace:
+  www.reddit.com: 5
+retry:
+  first_minutes: 15
+  max_minutes: 240
+feed_catalog:
+  hurricane:
+    name: NHC storms
+    url: https://www.nhc.noaa.gov/CurrentStorms.json
+    format: nhc_storms
+    update_minutes: 240
+  hurricane_track:
+    name: NHC past tracks
+    url: https://www.nhc.noaa.gov/CurrentStorms.json
+    format: nhc_track
+    update_minutes: 240
+  hurricane_cone:
+    name: NHC forecast cones
+    url: https://www.nhc.noaa.gov/CurrentStorms.json
+    format: nhc_cone
+    update_minutes: 240
+  bbc:
+    name: BBC
+    url: https://feeds.bbci.co.uk/news/world/rss.xml
+    format: rss
+    check: etag
+    update_minutes: 5
+  sun:
+    name: Sun
+    format: sun
+    update_minutes: 4
+  earthquakes:
+    name: USGS
+    update_minutes: 10
+    format: usgs_quakes
+    url: https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson
+  nws_alerts_miami:
+    name: NWS alerts (Miami)
+    update_minutes: 5
+    format: nws_alerts
+    url: https://api.weather.gov/alerts/active?area=FL
+    sender: NWS Miami FL
+  nws_storm_reports_miami:
+    name: NWS storm reports (Miami)
+    update_minutes: 10
+    format: iem_storm_reports
+    office: MFL
+    hours: 24
+  flights_nearby:
+    name: Flights near Fort Lauderdale
+    update_minutes: 5
+    format: adsb_fi
+    near:
+      lat: 26.12
+      lon: -80.15
+      nm: 25
+  flights_military_us:
+    name: Military flights (US)
+    update_minutes: 5
+    format: adsb_fi
+    military: true
+    area:
+    - 24
+    - -125
+    - 50
+    - -66
+  flights_emergency:
+    name: Flights in an emergency
+    update_minutes: 5
+    format: adsb_fi
+    squawks:
+    - 7500
+    - 7600
+    - 7700
+  flights_watch:
+    name: Flights I'm watching
+    update_minutes: 5
+    format: adsb_fi
+    callsigns: []
+    registrations: []
+  rain_radar_florida:
+    name: Rain radar (Florida)
+    update_minutes: 5
+    format: iem_radar
+    url: https://mesonet.agron.iastate.edu/data/gis/images/4326/USCOMP/n0r_0.png
+    area:
+    - 24.0
+    - -88.0
+    - 31.5
+    - -79.0
+  rain_radar_world:
+    name: Rain radar (world)
+    update_minutes: 5
+    format: rainviewer
+    url: https://api.rainviewer.com/public/weather-maps.json
+  flights_interesting:
+    name: Interesting aircraft (South Florida)
+    update_minutes: 5
+    format: adsb_fi
+    near:
+      lat: 26.12
+      lon: -80.15
+      nm: 250
+    flags:
+    - interesting
+    - pia
+    - ladd
+    marquee: true
+  flight_restrictions:
+    name: Flight restrictions (FAA TFRs)
+    update_minutes: 15
+    format: faa_tfr
+    url: https://tfr.faa.gov/tfrapi/exportTfrList
+  airport_status:
+    name: Airport status (FAA)
+    update_minutes: 5
+    format: faa_airport_status
+    url: https://nasstatus.faa.gov/api/airport-status-information
+  satellites:
+    name: Satellites
+    update_minutes: 10
+    format: celestrak_satellites
+    groups:
+    - stations
+    - visual
+    observer:
+      lat: 26.12
+      lon: -80.15
+    hours: 12
+  gps_jamming:
+    name: GPS jamming
+    update_minutes: 360
+    format: gpsjam
+    threshold: 0.1
+    min_aircraft: 3
+  internet_outages:
+    name: Internet outages
+    update_minutes: 30
+    format: ioda_outages
+    hours: 24
+  exploited_vulnerabilities:
+    name: Exploited vulnerabilities (CISA)
+    update_minutes: 360
+    format: cisa_kev
+    newest: 20
+    url: https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+  florida_emergency_management:
+    name: Florida Emergency Management
+    update_minutes: 30
+    format: rss
+    url: https://public.govdelivery.com/accounts/FLDEM/feed.rss
+  satellite_clouds:
+    name: Storm clouds (satellite)
+    update_minutes: 30
+    format: gibs_wms
+    layers:
+    - GOES-West_ABI_Band13_Clean_Infrared
+    - GOES-East_ABI_Band13_Clean_Infrared
+    - Himawari_AHI_Band13_Clean_Infrared
+    drop_grey: true
+    rain_layer: 1
+  satellite_rain:
+    name: Rainfall (satellite)
+    update_minutes: 30
+    format: gibs_wms
+    layers:
+    - IMERG_Precipitation_Rate_30min
+    rain_layer: 2
+    step_minutes: 30
+  news_by_place_florida:
+    name: News by place (Florida)
+    update_minutes: 15
+    format: gdelt_events
+    area:
+    - 24.0
+    - -88.0
+    - 31.5
+    - -79.0
+    hours: 6

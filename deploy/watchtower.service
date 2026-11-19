@@ -1,0 +1,18 @@
+# systemd unit for watchtower. Copy to /etc/systemd/system/, then:
+#   systemctl daemon-reload && systemctl enable --now watchtower
+# Assumes the project is in /opt/watchtower and uv is in /root/.local/bin (README).
+[Unit]
+Description=watchtower: OSINT feeds and the web page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/watchtower
+ExecStart=/root/.local/bin/uv run watchtower
+Restart=on-failure
+RestartSec=30
+# Python's output straight to the journal (journalctl -u watchtower)
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
