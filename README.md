@@ -47,10 +47,11 @@ src/watchtower/
   feeds.py         the feed readers (from osint): rss, NHC, USGS, NWS alerts and storm
                    reports, adsb.fi flights, radar, RainViewer, NASA GIBS, GDELT, FAA TFRs
                    and airport status, CISA KEV, IODA, CelesTrak satellites, gpsjam,
-                   NASA FIRMS fire hotspots, NIFC US wildfires
+                   NASA FIRMS fire hotspots, NIFC US wildfires, NOAA river gauges,
+                   FHP incidents, FL511 traffic, aisstream.io ships (live websocket)
   icons.py         finds each news feed's icon (from osint), cached in web/icons
   web_news.py      writes web/news.js, web/geo.js and web/layers/*.png (from osint)
-  server.py        serves the web folder, and only it
+  server.py        serves the web folder, plus the page's aircraft lookup (/adsb/..., read-only)
   sun.py           where the sun is (from osint)
 web/
   index.html       the page (from osint-web); images/ the NASA day and night pictures
@@ -75,7 +76,7 @@ A small Debian container is plenty: 1 CPU, 1 GB of memory, 4 GB of disk.
    (uv installs into `~/.local/bin`; log out and back in, or `source ~/.profile`.)
 3. **Get watchtower:**
    ```
-   git clone https://github.com/flbas1/watchtower.git /opt/watchtower
+   git clone https://github.com/<owner>/watchtower.git /opt/watchtower
    cd /opt/watchtower
    cp config.example.yml config.yml     # then edit: your feeds, location, keywords
    uv run watchtower --once             # a first run: checks every feed, writes the files

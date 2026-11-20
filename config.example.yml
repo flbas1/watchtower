@@ -162,6 +162,34 @@ feed_catalog:
     update_minutes: 30
     format: nifc_wildfires
     url: https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query?where=IncidentTypeCategory%3D%27WF%27+AND+FireOutDateTime+IS+NULL&outFields=*&outSR=4326&f=json
+  flood_alerts_us:
+    name: Flood alerts (US)
+    update_minutes: 10
+    format: nws_alerts
+    url: https://api.weather.gov/alerts/active?event=Flash%20Flood%20Warning,Flood%20Warning,Flood%20Advisory,Flash%20Flood%20Watch,Flood%20Watch,Coastal%20Flood%20Warning,Coastal%20Flood%20Watch,Coastal%20Flood%20Advisory
+  river_gauges_flooding:
+    name: River gauges in flood (US)
+    update_minutes: 15
+    format: nws_river_gauges
+    url: https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/riv_gauges/MapServer/0/query?where=status+IN+(%27minor%27,%27moderate%27,%27major%27)&outFields=*&outSR=4326&f=json
+  fhp_incidents_south_florida:
+    name: FHP incidents (Miami-Dade + Broward)
+    update_minutes: 5
+    format: fhp_incidents
+    url: https://trafficincidents.flhsmv.gov/SmartWebClient/CadView.aspx
+    counties: [MIAMI-DADE, BROWARD]
+  traffic_fl511_south_florida:
+    name: FL511 traffic (Miami-Dade + Broward)
+    update_minutes: 5
+    format: fl511_events
+    types: [Incidents, Closures]
+    counties: [Miami-Dade, Broward]
+  ships_world:
+    name: Ships (AIS)
+    update_minutes: 2
+    format: aisstream
+    key:                     # your free API key from aisstream.io
+    max_age_minutes: 30
   exploited_vulnerabilities:
     name: Exploited vulnerabilities (CISA)
     update_minutes: 360

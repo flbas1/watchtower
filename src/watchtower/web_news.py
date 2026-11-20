@@ -16,6 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import icons
+from .config import feed_group
 from .feed_service import FeedService
 
 STORIES_PER_FEED = 20
@@ -46,15 +47,16 @@ def _number(x) -> float | None:
 
 
 def geo_object(cfg: dict, service: FeedService, names: set[str]) -> dict:
-    """{"updated", "location": {"lat", "lon"}, "feeds": {key: {"name", "format", "failed",
-    "items": [{"title", "url", "source", "time", "lat", "lon", "magnitude", "details", "id", "heading",
+    """{"updated", "location": {"lat", "lon"}, "feeds": {key: {"name", "format", "group", "failed",
+    "rain", "items": [{"title", "url", "source", "time", "lat", "lon", "magnitude", "details", "id", "heading",
     "emergency", "geometry"}]}}}.
     `geometry` is [[kind, [[lat, lon], ...]], ...] with kind "line", "polygon" or "point"."""
     feeds = {}
     failed = service.failed()
     for key in sorted(names, key=lambda k: cfg["feed_catalog"][k]["name"].casefold()):
         settings = cfg["feed_catalog"][key]
-        feeds[key] = {"name": settings["name"], "format": settings["format"], "failed": failed.get(key), "items": [],
+        feeds[key] = {"name": settings["name"], "format": settings["format"], "group": feed_group(settings),
+                      "failed": failed.get(key), "items": [],
                       "rain": settings.get("rain_layer")}       # a number: drawn under the page's Rain layer, lowest first
         items = service.latest(key)
         if items is None or items.empty:

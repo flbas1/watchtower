@@ -1,6 +1,9 @@
 import email.utils
 import hashlib
+import html
 import io
+import json
+import re
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -1162,6 +1165,338 @@ class NifcWildfiresProcessor(FeedProcessor):
         return pd.DataFrame(rows, columns=EVENT_COLUMNS)
 
 
+# --- floods: NOAA river gauges in flood ------------------------------------------------------------
+
+class NwsRiverGaugesProcessor(FeedProcessor):
+    """NOAA river gauges at a flood stage, from the National Weather Service's river gauges map
+    service (no key), e.g. url
+    https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/riv_gauges/MapServer/0/query?where=status+IN+(%27minor%27,%27moderate%27,%27major%27)&outFields=*&outSR=4326&f=json
+    (the `where` picks the stages: action, minor, moderate, major). Optional `area`.
+    One row per gauge, titled "St. Johns River at Astor, FL: moderate flooding, 3.38 ft";
+    magnitude is the stage, 1 (action) to 4 (major)."""
+
+    STAGES = {"action": 1, "minor": 2, "moderate": 3, "major": 4}
+
+    def process(self, client, response) -> pd.DataFrame:
+        area = self.settings.get("area")
+        rows = []
+        for f in response.json().get("features", []):
+            a = f.get("attributes") or {}
+            lat, lon = a.get("latitude"), a.get("longitude")
+            if lat is None or lon is None or (area and not (area[0] <= lat <= area[2] and area[1] <= lon <= area[3])):
+                continue
+            status, units = (a.get("status") or "").lower(), a.get("units") or ""
+            level = f", {a['observed']} {units}".rstrip() if a.get("observed") else ""
+            place = " at ".join(p for p in [a.get("waterbody"), a.get("location")] if p) or "Gauge"
+            place += f", {a['state']}" if a.get("state") else ""
+            stage = "at action stage" if status == "action" else f"{status} flooding"
+            marks = [f"{name} {a[key]} {units}".strip() for name, key in
+                     [("flood", "flood"), ("moderate", "moderate"), ("major", "major")] if a.get(key)]
+            rows.append({
+                "title": f"{place}: {stage}{level}",
+                "url": a.get("url"),
+                "source": self.settings["name"],
+                "time": pd.to_datetime(a["obstime"], utc=True) if a.get("obstime") else None,
+                "lat": lat, "lon": lon,
+                "id": a.get("gaugelid"),
+                "magnitude": self.STAGES.get(status),
+                "details": f"flood stages: {', '.join(marks)}" if marks else None,
+            })
+        return pd.DataFrame(rows, columns=EVENT_COLUMNS)
+
+
+# --- traffic: Florida Highway Patrol's live incidents, and FL511 -----------------------------------
+
+class FhpIncidentsProcessor(FeedProcessor):
+    """Florida Highway Patrol's live dispatch list (crashes, disabled vehicles, debris, roads
+    closed by water...) statewide, read from its public page (no key):
+    url https://trafficincidents.flhsmv.gov/SmartWebClient/CadView.aspx
+    Optional settings: `counties` (FHP's names, e.g. [MIAMI-DADE, BROWARD]) and `area`.
+    One row per incident, titled "Vehicle crash w/injuries: S DIXIE HWY SB at SW 280TH ST, HOMESTEAD".
+
+    The page gives times on a 12-hour clock without AM/PM, in Eastern time: each is taken as
+    the latest of the two that isn't in the future."""
+
+    ROW = re.compile(r'<tr[^>]*id="gvCAD_DXDataRow\d+"[^>]*>(.*?)</tr>', re.S)
+    CELL = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
+    INCIDENT = re.compile(r"popUP_MapInfo\('([^']+)'\)")
+    TAG = re.compile(r"<[^>]+>")
+    TIMEZONE = "America/New_York"
+
+    @staticmethod
+    def _text(cell: str) -> str:
+        return " ".join(html.unescape(FhpIncidentsProcessor.TAG.sub(" ", cell)).split())
+
+    @classmethod
+    def _when(cls, text: str, now: pd.Timestamp) -> pd.Timestamp | None:
+        try:
+            clock = pd.Timestamp(datetime.strptime(text, "%m/%d/%Y %H:%M:%S"))
+        except ValueError:
+            return None
+        first = clock - pd.Timedelta(hours=12) if clock.hour == 12 else clock          # 12:xx can be just past midnight or noon
+        choices = [first, first + pd.Timedelta(hours=12)]
+        local = [c.tz_localize(cls.TIMEZONE, ambiguous=True, nonexistent="shift_forward") for c in choices]
+        past = [c for c in local if c <= now + pd.Timedelta(minutes=10)]
+        return (max(past) if past else local[0]).tz_convert("UTC")
+
+    @staticmethod
+    def _place(location: str) -> str:
+        """"S DIXIE HWY SB x[SW 280TH ST] [HOMESTEAD]" -> "S DIXIE HWY SB at SW 280TH ST, HOMESTEAD"."""
+        cross = re.search(r"\bx\[(.*?)\]", location)
+        city = re.findall(r"\[([^\[\]]*)\]\s*$", location)
+        road = re.split(r"\s+x\[", location)[0]
+        road = re.sub(r"\s*\[[^\]]*\]+\s*$", "", road) if cross else road
+        out = road.strip()
+        if cross and cross.group(1).strip() and cross.group(1).strip() not in out:
+            out += f" at {cross.group(1).strip()}"
+        if city and city[0].strip() and city[0].strip() not in out:
+            out += f", {city[0].strip()}"
+        return out
+
+    def process(self, client, response) -> pd.DataFrame:
+        counties = {c.upper() for c in self.settings.get("counties") or []}
+        area = self.settings.get("area")
+        now = pd.Timestamp.now(tz=self.TIMEZONE)
+        rows = []
+        for row in self.ROW.findall(response.text):
+            cells = self.CELL.findall(row)
+            if len(cells) < 9:
+                continue
+            kind, received, dispatched, arrived, county, location, remarks, lat, lon = [self._text(c) for c in cells[:9]]
+            try:
+                lat, lon = float(lat), float(lon)
+            except ValueError:
+                continue
+            if (counties and county.upper() not in counties) or (area and not (area[0] <= lat <= area[2] and area[1] <= lon <= area[3])):
+                continue
+            incident = self.INCIDENT.search(cells[4])
+            when = self._when(received, now)
+            state = "arrived" if arrived else "dispatched" if dispatched else None
+            rows.append({
+                "title": f"{kind.capitalize()}: {self._place(location)}",
+                "url": self.settings.get("url"),
+                "source": self.settings["name"],
+                "time": when,
+                "lat": lat, "lon": lon,
+                "id": incident.group(1) if incident else f"{received} {lat} {lon}",
+                "magnitude": None,
+                "details": " · ".join(x for x in [remarks.capitalize() if remarks else None,
+                                                  f"{county.title()} County" if county else None,
+                                                  f"troopers {state}" if state else None] if x),
+            })
+        return pd.DataFrame(rows, columns=EVENT_COLUMNS)
+
+
+class Fl511EventsProcessor(FeedProcessor):
+    """Florida DOT's 511 traffic events, read from fl511.com's own pages (no key, no url): the
+    Incidents List's data gives each event's details, and the map's icon lists give where each
+    one is, matched by the event's id. Optional settings:
+      types     the site's names (default [Incidents, Closures]; also Congestion,
+                Disabled Vehicles, Construction Zones, Road Condition)
+      counties  e.g. [Miami-Dade, Broward] (asked for one county at a time); none = statewide
+      area      [south, west, north, east]
+    One row per event, titled "Incident: I-95 Northbound", linking to its page on fl511.com
+    (e.g. https://fl511.com/Event/Closures/461840?lang=en). Times are Eastern."""
+
+    SITE = "https://fl511.com"
+    PAGE = 100                                    # the most rows the list hands out at once
+    TIMEZONE = "America/New_York"
+
+    def _list(self, client, county: str | None) -> list[dict]:
+        columns = [{"data": None, "name": ""}, {"name": "region"},
+                   {"name": "county", **({"search": {"value": county}} if county else {})},
+                   {"name": "roadwayName"}, {"name": "direction"}, {"name": "type"}, {"name": "severity"},
+                   {"name": "description"}, {"name": "startDate"}, {"name": "lastUpdated"}, {"data": 10, "name": ""}]
+        events, start = [], 0
+        while True:
+            query = {"columns": columns, "order": [{"column": 9, "dir": "desc"}], "start": start,
+                     "length": self.PAGE, "search": {"value": ""}}
+            response = client.get(f"{self.SITE}/List/GetData/traffic", params={"query": json.dumps(query), "lang": "en-US"})
+            response.raise_for_status()
+            answer = response.json()
+            events += answer.get("data") or []
+            start += self.PAGE
+            if start >= (answer.get("recordsFiltered") or 0) or not answer.get("data"):
+                return events
+
+    def _places(self, client, layer: str) -> dict[str, list]:
+        response = client.get(f"{self.SITE}/map/mapIcons/{layer}")
+        response.raise_for_status()
+        return {str(i.get("itemId")): i.get("location") for i in response.json().get("item2") or []}
+
+    def _when(self, text: str | None) -> pd.Timestamp | None:
+        try:
+            return pd.Timestamp(datetime.strptime(text, "%m/%d/%y, %I:%M %p")).tz_localize(
+                self.TIMEZONE, ambiguous=True, nonexistent="shift_forward").tz_convert("UTC")
+        except (TypeError, ValueError):
+            return None
+
+    def process(self, client, response) -> pd.DataFrame:
+        types = {t.lower() for t in self.settings.get("types") or ["Incidents", "Closures"]}
+        area = self.settings.get("area")
+        events = [e for county in (self.settings.get("counties") or [None]) for e in self._list(client, county)
+                  if (e.get("type") or "").lower() in types]
+        places = {}
+        for layer in sorted({e.get("layerName") for e in events if e.get("layerName")}):
+            places.update(self._places(client, layer))
+        rows = []
+        for e in events:
+            lat, lon = (places.get(str(e.get("id"))) or [None, None])[:2]
+            if lat is None or lon is None or (area and not (area[0] <= lat <= area[2] and area[1] <= lon <= area[3])):
+                continue
+            kind = " ".join(w.removesuffix("s") for w in (e.get("type") or "Event").split()).capitalize()
+            road = " ".join(x for x in [e.get("roadwayName"), e.get("direction")] if x and x != "Unknown")
+            full = " (full closure)" if e.get("isFullClosure") else ""
+            description = re.sub(r"\s*Last updated at [^.]*\.\s*$", "", e.get("description") or "")
+            rows.append({
+                "title": f"{kind}: {road or 'road'}{full}",
+                "url": f"{self.SITE}/Event/{e['layerName']}/{e['id']}?lang=en" if e.get("layerName") and e.get("id")
+                       else f"{self.SITE}/map",                          # the event's own page: its details
+                "source": self.settings["name"],
+                "time": self._when(e.get("lastUpdated") or e.get("startDate")),
+                "lat": lat, "lon": lon,
+                "id": e.get("id"),
+                "magnitude": None,
+                "details": " · ".join(x for x in [description, e.get("laneDescription") and f"lanes: {e['laneDescription']}",
+                                                  e.get("severity") and f"{e['severity'].lower()} severity"] if x),
+            })
+        return pd.DataFrame(rows, columns=EVENT_COLUMNS)
+
+
+# --- ships: aisstream.io's live AIS stream ---------------------------------------------------------
+
+SHIP_COLUMNS = EVENT_COLUMNS + ["heading"]
+SHIP_STATUS = {0: "under way", 1: "at anchor", 2: "not under command", 3: "restricted manoeuvrability",
+               4: "constrained by draught", 5: "moored", 6: "aground", 7: "fishing", 8: "sailing", 14: "emergency beacon"}
+
+
+def _ship_type(code) -> str | None:
+    """AIS ship type number -> a word (ITU-R M.1371 table 53)."""
+    if not isinstance(code, int):
+        return None
+    named = {30: "fishing", 31: "towing", 32: "towing", 33: "dredger", 34: "dive vessel", 35: "military",
+             36: "sailing", 37: "pleasure craft", 50: "pilot", 51: "search and rescue", 52: "tug",
+             53: "port tender", 55: "law enforcement", 58: "medical"}
+    if code in named:
+        return named[code]
+    return {4: "high-speed craft", 6: "passenger", 7: "cargo", 8: "tanker"}.get(code // 10)
+
+
+class AisStreamProcessor(FeedProcessor):
+    """Ships' AIS positions, live from aisstream.io's websocket (free; `key` is the API key from
+    aisstream.io). No url. Settings:
+      area             optional [south, west, north, east]; none = the whole world
+      max_age_minutes  a ship not heard from for this long is dropped (default 30)
+    The stream stays connected in the background, keeping each ship's latest position, name,
+    type and destination; each update hands out what it holds. One row per ship, titled
+    "MAERSK KENSINGTON: cargo, 14 kn"; magnitude is its speed (knots)."""
+
+    URL = "wss://stream.aisstream.io/v0/stream"
+    POSITIONS = ("PositionReport", "StandardClassBPositionReport", "ExtendedClassBPositionReport")
+    FIRST_WAIT = 15                      # seconds the first update waits for the stream to start
+
+    def __init__(self, settings: dict) -> None:
+        super().__init__(settings)
+        self._ships: dict[int, dict] = {}
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._problem: str | None = None
+
+    def subscription(self) -> dict:
+        s, w, n, e = self.settings.get("area") or [-90, -180, 90, 180]
+        return {"APIKey": self.settings.get("key"), "BoundingBoxes": [[[s, w], [n, e]]],
+                "FilterMessageTypes": [*self.POSITIONS, "ShipStaticData", "StaticDataReport"]}
+
+    def process(self, client, response) -> pd.DataFrame:
+        if not self.settings.get("key"):
+            raise ValueError("aisstream.io needs an API key: get one free at aisstream.io and set key: for this feed in config.yml")
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._listen, name=f"ais {self.settings['name']}", daemon=True)
+            self._thread.start()
+            end = time.monotonic() + self.FIRST_WAIT
+            while time.monotonic() < end and not self._ships and not self._problem:
+                time.sleep(0.2)
+        if self._problem and not self._ships:
+            raise ConnectionError(self._problem)
+        return self.rows()
+
+    def rows(self) -> pd.DataFrame:
+        cutoff = time.time() - self.settings.get("max_age_minutes", 30) * 60
+        with self._lock:
+            for mmsi in [m for m, s in self._ships.items() if s["heard"] < cutoff]:
+                del self._ships[mmsi]
+            ships = [dict(s) for s in self._ships.values() if s.get("lat") is not None]
+        rows = []
+        for s in ships:
+            speed = s.get("sog") if isinstance(s.get("sog"), (int, float)) and s["sog"] < 102.3 else None
+            status = SHIP_STATUS.get(s.get("status"))
+            moving = f"{speed:.0f} kn" if speed and speed >= 0.5 else status or "stopped"
+            heading = s.get("heading") if isinstance(s.get("heading"), (int, float)) and s["heading"] < 360 else \
+                s.get("cog") if isinstance(s.get("cog"), (int, float)) and s["cog"] < 360 else None
+            rows.append({
+                "title": f"{s.get('name') or 'MMSI ' + str(s['mmsi'])}: {s.get('type') or 'vessel'}, {moving}",
+                "url": f"https://www.marinetraffic.com/en/ais/details/ships/mmsi:{s['mmsi']}",
+                "source": self.settings["name"],
+                "time": pd.Timestamp(s["seen"], unit="s", tz="UTC"),
+                "lat": s["lat"], "lon": s["lon"],
+                "id": str(s["mmsi"]),
+                "magnitude": speed,
+                "details": " · ".join(x for x in [status, s.get("destination") and f"to {s['destination']}",
+                                                  f"MMSI {s['mmsi']}"] if x),
+                "heading": heading,
+            })
+        return pd.DataFrame(rows, columns=SHIP_COLUMNS)
+
+    def _listen(self) -> None:
+        from websockets.sync.client import connect
+        wait = 5
+        while True:
+            try:
+                with connect(self.URL, open_timeout=20, max_size=2 ** 22, compression="deflate") as ws:
+                    ws.send(json.dumps(self.subscription()))       # must arrive within 3 seconds
+                    for raw in ws:
+                        message = json.loads(raw)
+                        if "error" in message:
+                            self._problem = f"aisstream.io: {message['error']}"
+                            break
+                        self.take(message)
+                        self._problem, wait = None, 5
+            except Exception as ex:                                 # anything: wait, then connect again
+                self._problem = f"{type(ex).__name__}: {ex}"
+            time.sleep(wait)
+            wait = min(wait * 2, 300)
+
+    def take(self, message: dict) -> None:
+        """One stream message into the ship it's about."""
+        kind = message.get("MessageType")
+        body = (message.get("Message") or {}).get(kind) or {}
+        meta = message.get("MetaData") or {}
+        mmsi = meta.get("MMSI") or body.get("UserID")
+        if not mmsi:
+            return
+        now = time.time()
+        with self._lock:
+            ship = self._ships.setdefault(mmsi, {"mmsi": mmsi, "heard": now})
+            ship["heard"] = now
+            name = (meta.get("ShipName") or "").strip(" @")
+            if name:
+                ship["name"] = name
+            if kind in self.POSITIONS:
+                lat, lon = body.get("Latitude"), body.get("Longitude")
+                if isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and abs(lat) <= 90 and abs(lon) <= 180:
+                    ship.update(lat=lat, lon=lon, sog=body.get("Sog"), cog=body.get("Cog"), seen=now,
+                                heading=body.get("TrueHeading"), status=body.get("NavigationalStatus"))
+            elif kind == "ShipStaticData":
+                ship.update({k: v for k, v in {"name": (body.get("Name") or "").strip(" @"), "type": _ship_type(body.get("Type")),
+                                               "destination": (body.get("Destination") or "").strip(" @")}.items() if v})
+            elif kind == "StaticDataReport":
+                a, b = body.get("ReportA") or {}, body.get("ReportB") or {}
+                if a.get("Valid") and (a.get("Name") or "").strip(" @"):
+                    ship["name"] = a["Name"].strip(" @")
+                if b.get("Valid") and _ship_type(b.get("ShipType")):
+                    ship["type"] = _ship_type(b.get("ShipType"))
+
+
 class Feed:
     def __init__(self, name, settings):
         self.name = name
@@ -1185,14 +1520,9 @@ class Feed:
         response = client.get(self.url, headers=headers, **self.auth.request_args())
         if response.status_code == 304:
             return None                                    # nothing changed since last time
-        # response.raise_for_status()
-        # self.etag = response.headers.get("ETag")
-        # return self.processor.process(client, response)
-
         response.raise_for_status()
-        result = self.processor.process(client, response)
         self.etag = response.headers.get("ETag")
-        return result
+        return self.processor.process(client, response)
 
 
 
@@ -1226,5 +1556,9 @@ PROCESSORS = {                       # `format:` in the YAML -> the class that r
     "gpsjam": GpsJamProcessor,
     "firms_hotspots": FirmsHotspotsProcessor,
     "nifc_wildfires": NifcWildfiresProcessor,
+    "nws_river_gauges": NwsRiverGaugesProcessor,
+    "fhp_incidents": FhpIncidentsProcessor,
+    "fl511_events": Fl511EventsProcessor,
+    "aisstream": AisStreamProcessor,
 }
 AUTH_TYPES = {"none": NoAuth, "basic": BasicAuth}

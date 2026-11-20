@@ -103,6 +103,31 @@ DEFAULTS: dict[str, object] = {
         "us_wildfires": {"name": "US wildfires", "update_minutes": 30, "format": "nifc_wildfires",
                          "url": "https://services3.arcgis.com/T4QMspbfLg3qTGWY/arcgis/rest/services/WFIGS_Incident_Locations_Current/FeatureServer/0/query"
                                 "?where=IncidentTypeCategory%3D%27WF%27+AND+FireOutDateTime+IS+NULL&outFields=*&outSR=4326&f=json"},
+        # Floods, US-wide: every NWS flood, flash flood and coastal flood warning, watch and
+        # advisory with its area, and NOAA river gauges at minor, moderate or major flood stage.
+        "flood_alerts_us": {"name": "Flood alerts (US)", "update_minutes": 10, "format": "nws_alerts", "group": "Weather / Floods",
+                            "url": "https://api.weather.gov/alerts/active?event=Flash%20Flood%20Warning,Flood%20Warning,"
+                                   "Flood%20Advisory,Flash%20Flood%20Watch,Flood%20Watch,Coastal%20Flood%20Warning,"
+                                   "Coastal%20Flood%20Watch,Coastal%20Flood%20Advisory"},
+        "river_gauges_flooding": {"name": "River gauges in flood (US)", "update_minutes": 15, "format": "nws_river_gauges",
+                                  "url": "https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/riv_gauges/MapServer/0/query"
+                                         "?where=status+IN+(%27minor%27,%27moderate%27,%27major%27)&outFields=*&outSR=4326&f=json"},
+        # Traffic: Florida Highway Patrol's live incidents (crashes, disabled vehicles, debris,
+        # roads under water) in `counties`, and FL511's events of `types` there (read from
+        # fl511.com's own pages, no key; also Congestion, Disabled Vehicles, Construction Zones,
+        # Road Condition).
+        "fhp_incidents_south_florida": {"name": "FHP incidents (Miami-Dade + Broward)", "update_minutes": 5,
+                                        "format": "fhp_incidents",
+                                        "url": "https://trafficincidents.flhsmv.gov/SmartWebClient/CadView.aspx",
+                                        "counties": ["MIAMI-DADE", "BROWARD"]},
+        "traffic_fl511_south_florida": {"name": "FL511 traffic (Miami-Dade + Broward)", "update_minutes": 5,
+                                        "format": "fl511_events",
+                                        "types": ["Incidents", "Closures"], "counties": ["Miami-Dade", "Broward"]},
+        # Ships: AIS positions live from aisstream.io, worldwide (strongest along coasts and in
+        # ports, where volunteers' receivers are). Needs a free API key from aisstream.io in
+        # `key`; `area` [south, west, north, east] narrows it.
+        "ships_world": {"name": "Ships (AIS)", "update_minutes": 2, "format": "aisstream", "key": None,
+                        "max_age_minutes": 30},
         # Vulnerabilities attackers are exploiting now (CISA), the newest 20.
         "exploited_vulnerabilities": {"name": "Exploited vulnerabilities (CISA)", "update_minutes": 360,
                                       "format": "cisa_kev", "newest": 20,
@@ -127,6 +152,24 @@ DEFAULTS: dict[str, object] = {
                                   "area": [24.0, -88.0, 31.5, -79.0], "hours": 6},
     },
 }
+
+# Where a feed sits in a map's feed list: groups inside groups, separated by " / ". A feed's own
+# `group:` wins; otherwise its format's group here; otherwise "Other".
+FORMAT_GROUPS: dict[str, str] = {
+    "adsb_fi": "Air / Flights", "faa_tfr": "Air", "faa_airport_status": "Air", "gpsjam": "Air",
+    "iem_radar": "Weather / Rain", "rainviewer": "Weather / Rain", "gibs_wms": "Weather / Rain",
+    "nhc_storms": "Weather / Hurricanes", "nhc_track": "Weather / Hurricanes", "nhc_cone": "Weather / Hurricanes",
+    "nws_alerts": "Weather / Alerts and reports", "iem_storm_reports": "Weather / Alerts and reports",
+    "nws_river_gauges": "Weather / Floods",
+    "firms_hotspots": "Fire", "nifc_wildfires": "Fire", "usgs_quakes": "Earthquakes",
+    "fhp_incidents": "Traffic", "fl511_events": "Traffic", "aisstream": "Ships",
+    "celestrak_satellites": "Space", "sun": "Space", "ioda_outages": "Internet", "gdelt_events": "News",
+}
+
+
+def feed_group(feed: dict) -> str:
+    return feed.get("group") or FORMAT_GROUPS.get(feed.get("format"), "Other")
+
 
 # Every feed setting not given takes these.
 FEED_DEFAULTS: dict[str, object] = {"name": None, "url": None, "format": None, "authtype": "none",

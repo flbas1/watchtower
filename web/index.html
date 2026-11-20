@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WatchTower</title>
+<title>osint-web</title>
 <style>
   :root {
     --row: 44px;          /* height of one marquee */
@@ -98,6 +98,13 @@
   #popup .picker div:hover { background: #3a3a3a; }
   #popup .picker div.current { background: var(--accent); }
   #popup .picker div.dim { color: var(--dim); }
+  #popup .picker.tree { max-height: 320px; }
+  #popup .picker div.group { display: flex; align-items: center; gap: 4px; font-weight: 600; background: #262626; }
+  #popup .picker div.group label { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  #popup .picker .fold { width: 14px; color: #bbb; text-align: center; }
+  #popup .picker .count { color: var(--dim); font-weight: normal; font-size: 12px; }
+  #popup input.track { flex: 1; width: auto; min-width: 150px; }
+  #popup .track-status { margin: -4px 0 8px 118px; }
   #popup .note { color: var(--dim); font-size: 12px; }
 </style>
 </head>
@@ -630,7 +637,62 @@ function mapPoints(cfg) {                  // every place the map's feeds mark, 
       for (const [, pts] of item.geometry) points.push(...pts);
     }
   }
+  for (const { item } of trackedItems(cfg)) points.push([item.lat, item.lon]);
   return points;
+}
+
+// ---- tracked aircraft: a map's "Track" callsigns and tail numbers --------------------------------
+// Looked up through watchtower's /adsb/ address (adsb.fi doesn't let pages ask it directly)
+// when the list changes and every RELOAD_SECONDS. Only in this browser, like the rest of the layout.
+const TRACK_PLANE_COLOUR = "#ff3cf0";
+const TRACKED_FEED = { name: "Tracked aircraft", format: "adsb_fi", items: [] };
+const tracked = new Map();          // "callsign/JBU2926" -> {items, error, when}
+
+function trackKeys(cfg) {
+  return [...(cfg.track?.callsigns ?? []).map(c => "callsign/" + c), ...(cfg.track?.tails ?? []).map(t => "registration/" + t)];
+}
+
+function trackedItems(cfg) {
+  const seen = new Set(), out = [];
+  for (const key of trackKeys(cfg)) {
+    for (const item of tracked.get(key)?.items ?? []) {
+      if (seen.has(item.id) || item.lat == null || item.lon == null) continue;
+      seen.add(item.id);
+      out.push({ item, feed: TRACKED_FEED, key: "tracked" });
+    }
+  }
+  return out;
+}
+
+// What the popup says about one callsign or tail: found, not flying, or the lookup failing.
+function trackStatus(key) {
+  const t = tracked.get(key);
+  if (!t) return "looking...";
+  if (t.error) return "lookup failed";
+  return t.items.length ? (t.items[0].title || "found") : "not seen now";
+}
+
+let tracking = false;
+async function refreshTracked(onlyNew = false) {
+  if (tracking || location.protocol === "file:") return;
+  tracking = true;
+  try {
+    const keys = [...new Set((layout().maps ?? []).flatMap(trackKeys))];
+    let changed = false;
+    for (const key of keys) {
+      if (onlyNew && tracked.has(key)) continue;
+      let entry;
+      try {
+        const r = await fetch("adsb/" + key, { cache: "no-store" });
+        const answer = await r.json();
+        entry = r.ok ? { items: answer.items ?? [] } : { items: [], error: answer.error ?? r.status };
+      } catch (e) { entry = { items: [], error: String(e) }; }
+      tracked.set(key, entry);
+      changed = true;
+    }
+    for (const key of [...tracked.keys()]) if (!keys.includes(key)) { tracked.delete(key); changed = true; }
+    if (changed) geoChanged();
+  } finally { tracking = false; }
 }
 
 // The view that shows every point (osint's fit_view): centred on them, zoomed in as far as
@@ -683,8 +745,12 @@ const FORMAT_COLOURS = {
   adsb_fi: "#ffffff",                // planes: white (military olive, flagged gold, unless the feed has its own colour)
   firms_hotspots: "#ff6a00",         // satellite fire hotspots: fire orange, small dots
   nifc_wildfires: "#ff2d00",         // US named wildfires: orange-red
+  nws_river_gauges: "#2f5bff",       // river gauges in flood: deep blue
+  fhp_incidents: "#ffcc66",          // Highway Patrol incidents: light amber
+  fl511_events: "#c58cff",           // FL511 traffic: lavender
+  aisstream: "#20d0c0",              // ships: teal, small dots
 };
-const MARKER_SIZES = { celestrak_satellites: 3, firms_hotspots: 3 };   // small dots for many small things; others MARKER_RADIUS
+const MARKER_SIZES = { celestrak_satellites: 3, firms_hotspots: 3, aisstream: 2 };   // small dots for many small things; others MARKER_RADIUS
 const PLANE_FLAG_COLOURS = { military: "#9acd32", interesting: "#ffd700", pia: "#ffd700", ladd: "#ffd700" };
 
 function feedColour(map, key, format) {
@@ -1044,11 +1110,12 @@ function drawMarkers(map) {
   const { ctx } = prepare(map.layers.markers, w, h);
   const cfg = map.cfg;
   map.targets = [];
-  const items = cfg.feeds.flatMap(key => (GEO.feeds[key]?.items ?? []).map(item => ({ item, feed: GEO.feeds[key], key })));
+  const items = [...cfg.feeds.flatMap(key => (GEO.feeds[key]?.items ?? []).map(item => ({ item, feed: GEO.feeds[key], key }))),
+                 ...trackedItems(cfg)];                           // drawn last: on top
 
   // shapes: areas first, then tracks, then forecast points (as osint). Weather alert areas
   // are orange, so a warning doesn't look like a hurricane cone (white).
-  const shapes = items.flatMap(({ item, feed, key }) => item.geometry.map(([kind, pts]) => [kind, pts, feed.format, key]));
+  const shapes = items.flatMap(({ item, feed, key }) => (item.geometry ?? []).map(([kind, pts]) => [kind, pts, feed.format, key]));
   const pixels = pts => {                                     // a shape stays together across the 180° line
     const first = near(pts[0][1]);
     return pts.map(([lat, lon]) => [toX(first + wrapLon(lon - first)), toY(lat)]);
@@ -1085,6 +1152,7 @@ function drawMarkers(map) {
     if (feed.format === "adsb_fi") {
       const flag = (item.flags || "").split(" ").find(f => PLANE_FLAG_COLOURS[f]);
       const colour = item.emergency ? MARKER_FILL
+                   : key === "tracked" ? cfg.track?.colour ?? TRACK_PLANE_COLOUR
                    : cfg.colours?.[key] ?? (flag ? PLANE_FLAG_COLOURS[flag] : FORMAT_COLOURS.adsb_fi);
       drawPlane(ctx, x, y, item.heading ?? 0, colour);
     }
@@ -1379,24 +1447,54 @@ function openMapPopup(index, anchor) {
   const edit = fn => { change(l => fn(l.maps[index])); again(); };
   const choice = (current, options, set) => options.map(([value, text]) =>
     el("button", { class: current === value ? "on" : "", textContent: text, onclick: () => edit(m => set(m, value)) }));
-  const feedKeys = Object.keys(GEO.feeds);
   const center = cfg.center === "follow" ? "follow" : cfg.center && typeof cfg.center === "object" ? "here" : "location";
   const live = mapsOnScreen[index];
   const docked = cfg.placement === "docked";
+  const feedRow = (k, depth) => {
+    const f = GEO.feeds[k];
+    const box = el("input", { type: "checkbox", checked: cfg.feeds.includes(k),
+      onchange: e => edit(m => { m.feeds = e.target.checked ? [...m.feeds, k] : m.feeds.filter(x => x !== k); }) });
+    const none = f.format !== "sun" && !f.items.length;
+    const colour = f.format === "sun" ? null : el("input", {                // the feed's colour on this map: the legend too
+      type: "color", className: "swatch", value: feedColour({ cfg }, k, f.format), title: "This feed's colour on this map",
+      onchange: e => edit(m => { m.colours = { ...(m.colours || {}), [k]: e.target.value }; }) });
+    return el("div", { class: none ? "dim" : "", title: f.failed ?? "", style: `padding-left: ${6 + depth * 18 + 18}px` },
+              el("label", {}, box, colour, " " + f.name + (f.failed ? " (failing)" : none ? " (none now)" : "")));
+  };
+  // A group: its arrow folds it open and shut (remembered in this browser), its tick turns all
+  // of its feeds on or off (half-ticked when only some are on).
+  const groupRows = (node, path, depth) => {
+    const open = openGroups().has(path);
+    const keys = groupFeeds(node), on = keys.filter(k => cfg.feeds.includes(k)).length;
+    const box = el("input", { type: "checkbox", checked: on === keys.length, title: "All of this group on or off",
+      onchange: e => edit(m => { m.feeds = e.target.checked ? [...new Set([...m.feeds, ...keys])] : m.feeds.filter(x => !keys.includes(x)); }) });
+    box.indeterminate = on > 0 && on < keys.length;
+    const head = el("div", { class: "group", style: `padding-left: ${6 + depth * 18}px` },
+      el("span", { class: "fold", textContent: open ? "▾" : "▸", onclick: () => { toggleGroup(path); again(); } }),
+      el("label", {}, box, " " + node.name),
+      el("span", { class: "count", textContent: `${on} of ${keys.length}`, onclick: () => { toggleGroup(path); again(); } }));
+    if (!open) return [head];
+    return [head, ...[...node.groups.values()].flatMap(g => groupRows(g, path + " / " + g.name, depth + 1)),
+            ...node.feeds.map(k => feedRow(k, depth))];
+  };
+  const tree = feedTree();
+  const trackInput = (which, placeholder) => el("input", { type: "search", class: "track", placeholder,
+    value: (cfg.track?.[which] ?? []).join(", "), title: "Separate with commas or spaces; Enter or leaving the box saves it",
+    onchange: e => {
+      edit(m => { m.track = { ...(m.track ?? {}), [which]: trackList(e.target.value) }; });
+      refreshTracked(true).then(() => { if (popupOpen()) again(); });       // the found / not seen lines
+    } });
+  const watching = trackKeys(cfg);
   showPopup(anchor, [
     el("h3", { textContent: "Map" }),
     el("div", { class: "line" }, el("label", { textContent: "Feeds" })),
-    el("div", { class: "picker" }, ...feedKeys.map(k => {
-      const f = GEO.feeds[k];
-      const box = el("input", { type: "checkbox", checked: cfg.feeds.includes(k),
-        onchange: e => edit(m => { m.feeds = e.target.checked ? [...m.feeds, k] : m.feeds.filter(x => x !== k); }) });
-      const none = f.format !== "sun" && !f.items.length;
-      const colour = f.format === "sun" ? null : el("input", {                // the feed's colour on this map: the legend too
-        type: "color", className: "swatch", value: feedColour({ cfg }, k, f.format), title: "This feed's colour on this map",
-        onchange: e => edit(m => { m.colours = { ...(m.colours || {}), [k]: e.target.value }; }) });
-      return el("div", { class: none ? "dim" : "", title: f.failed ?? "" },
-                el("label", {}, box, colour, " " + f.name + (f.failed ? " (failing)" : none ? " (none now)" : "")));
-    })),
+    el("div", { class: "picker tree" }, ...[...tree.groups.values()].flatMap(g => groupRows(g, g.name, 0))),
+    el("div", { class: "line" }, el("label", { textContent: "Track callsigns" }), trackInput("callsigns", "e.g. JBU2926, AAL100")),
+    el("div", { class: "line" }, el("label", { textContent: "Track tails" }), trackInput("tails", "e.g. N972QS"),
+       el("input", { type: "color", className: "swatch", value: cfg.track?.colour ?? TRACK_PLANE_COLOUR, title: "Tracked aircraft's colour on this map",
+         onchange: e => edit(m => { m.track = { ...(m.track ?? {}), colour: e.target.value }; }) })),
+    watching.length ? el("div", { class: "note track-status" },
+      ...watching.map(key => el("div", { textContent: `${key.split("/")[1]}: ${trackStatus(key)}` }))) : null,
     el("div", { class: "line" }, el("label", { textContent: "Rain opacity" }),
        el("input", { type: "number", min: 10, max: 100, step: 5, value: cfg.rainOpacity, title: "How see-through the rain is",
          onchange: e => { const o = Number(e.target.value); if (o >= 10 && o <= 100) edit(m => { m.rainOpacity = o; }); } }),
@@ -1446,6 +1544,40 @@ function openMapPopup(index, anchor) {
   ]);
 }
 
+// The map popup's feed list as groups inside groups, from each feed's `group` ("Weather / Rain"):
+// {groups: Map(name -> node), feeds: [keys]}, groups and feeds in alphabetical order.
+function feedTree() {
+  const root = { name: "", groups: new Map(), feeds: [] };
+  for (const key of Object.keys(GEO.feeds)) {
+    let node = root;
+    for (const name of (GEO.feeds[key].group || "Other").split("/").map(s => s.trim()).filter(Boolean)) {
+      if (!node.groups.has(name)) node.groups.set(name, { name, groups: new Map(), feeds: [] });
+      node = node.groups.get(name);
+    }
+    node.feeds.push(key);
+  }
+  const sort = node => {
+    node.groups = new Map([...node.groups].sort(([a], [b]) => a.localeCompare(b)));
+    node.feeds.sort((a, b) => GEO.feeds[a].name.localeCompare(GEO.feeds[b].name));
+    node.groups.forEach(sort);
+  };
+  sort(root);
+  return root;
+}
+
+function groupFeeds(node) { return [...node.feeds, ...[...node.groups.values()].flatMap(groupFeeds)]; }
+
+// Which groups are open in the feed lists (all start shut), kept in this browser.
+const OPEN_GROUPS_KEY = "watchtower.openGroups";
+function openGroups() {
+  try { return new Set(JSON.parse(localStorage.getItem(OPEN_GROUPS_KEY)) ?? []); } catch { return new Set(); }
+}
+function toggleGroup(path) {
+  const open = openGroups();
+  if (!open.delete(path)) open.add(path);
+  try { localStorage.setItem(OPEN_GROUPS_KEY, JSON.stringify([...open])); } catch { /* storage full or off: just not remembered */ }
+}
+
 function addMap() {
   const feeds = Object.keys(GEO.feeds);
   change(l => { l.maps.push(newMap(feeds)); });
@@ -1457,7 +1589,8 @@ function newMap(feeds) {
   return { feeds, center: null, zoom: 1, placement: "docked", side: "right", size: 35, push: true,
            x: 100, y: 100, w: 600, h: 380, rainOpacity: 70, streetsOpacity: 0, streetsFromZoom: 5,   // streets: 0 = off; only past zoom 5
            rainSatelliteMaxZoom: 4, rainRadarMaxZoom: 8,     // rain hides past these zooms
-           colours: {} };                                     // feed key -> "#rrggbb", overriding FORMAT_COLOURS
+           colours: {},                                       // feed key -> "#rrggbb", overriding FORMAT_COLOURS
+           track: { callsigns: [], tails: [] } };             // aircraft followed by callsign / tail number (+ colour)
 }
 
 function normaliseMap(m) {
@@ -1481,7 +1614,16 @@ function normaliseMap(m) {
   }
   for (const k of ["x", "y", "w", "h"]) if (isFinite(m[k])) n[k] = +m[k];
   n.w = Math.max(200, n.w); n.h = Math.max(120, n.h);
+  const t = m.track && typeof m.track === "object" ? m.track : {};
+  n.track = { callsigns: trackList(t.callsigns), tails: trackList(t.tails),
+              ...(/^#[0-9a-f]{6}$/i.test(t.colour) ? { colour: t.colour } : {}) };
   return n;
+}
+
+// "jbu2926, N972QS" or a list -> ["JBU2926", "N972QS"]: what the /adsb/ lookup accepts, once each.
+function trackList(value) {
+  const words = Array.isArray(value) ? value : String(value ?? "").split(/[\s,;]+/);
+  return [...new Set(words.map(w => String(w).trim().toUpperCase()).filter(w => /^[A-Z0-9-]{2,10}$/.test(w)))];
 }
 
 // =============================================================================
@@ -1679,8 +1821,8 @@ function showMessage(html) {
   m.innerHTML = html;
 }
 
-// Maps saved when rain had its own On/Off switch: their rain feeds start unticked (Chris,
-// 2026-11-19). Needs geo.js to know which feeds are rain, so it runs once geo.js has loaded.
+// Maps saved when rain had its own On/Off switch: their rain feeds start unticked
+// (2026-11-19). Needs geo.js to know which feeds are rain, so it runs once geo.js has loaded.
 function untickRainOnOldMaps() {
   if (!saved?.maps.some(m => m.oldRain)) return;
   change(l => { for (const m of l.maps) { if (m.oldRain) m.feeds = m.feeds.filter(k => !isRainFeed(k)); delete m.oldRain; } });
@@ -1705,6 +1847,7 @@ async function refresh() {
     refreshRows(defaultBefore);
     if (geoNew) geoChanged();
   }
+  refreshTracked();
 }
 
 saved = loadSaved();          // here, once every constant above exists

@@ -1,6 +1,6 @@
 """The feed service: runs every feed on its own schedule, on background threads.
 
-The contract with feeds.py (Chris's side):
+The contract with feeds.py (the feed readers' side):
   - a feed has `name`, `update_minutes`, and `fetch(client) -> DataFrame | None`;
   - `fetch` returns a DataFrame of items (title, url, source, time, lat, lon),
     or None when nothing changed (e.g. an ETag 304);

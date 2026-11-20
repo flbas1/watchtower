@@ -3,9 +3,6 @@ name = "watchtower"
 version = "0.1.0"
 description = "Open-source intelligence feeds on a web page of marquees and maps; headless, for a server or container"
 readme = "README.md"
-authors = [
-    { name = "bm1-cstewart" }
-]
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28.1",
@@ -15,6 +12,7 @@ dependencies = [
     "ruamel-yaml>=0.19.1",
     "sgp4>=2.27",
     "h3>=4.5.0",
+    "websockets>=17.4",
 ]
 
 [project.scripts]
